@@ -1,0 +1,2872 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>海边日出日落</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; color: #fff; }
+  canvas { display: block; }
+
+  #title {
+    position: fixed; top: 20px; left: 24px;
+    font-size: 20px; letter-spacing: 4px; font-weight: 300;
+    text-shadow: 0 1px 8px rgba(0,0,0,.45);
+    pointer-events: none;
+  }
+  #title small { display: block; font-size: 12px; letter-spacing: 1px; opacity: .7; margin-top: 6px; }
+
+  #panel {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+    width: min(560px, calc(100% - 32px));
+    padding: 14px 18px 12px;
+    background: rgba(12, 18, 30, .38);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 14px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  #clock { font-size: 26px; font-variant-numeric: tabular-nums; font-weight: 300; letter-spacing: 1px; }
+  #phase { font-size: 14px; opacity: .85; margin-left: 10px; }
+  .btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  button {
+    font: inherit; font-size: 13px; color: #fff; cursor: pointer;
+    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.18);
+    border-radius: 8px; padding: 5px 10px;
+  }
+  button:hover { background: rgba(255,255,255,.16); }
+  button.on { background: rgba(255,255,255,.28); border-color: rgba(255,255,255,.4); }
+
+  .track { position: relative; margin: 12px 0 18px; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 3px; outline: none; margin: 0;
+    background: linear-gradient(to right,
+      #1a2340 0%, #ff8a50 4%, #ffc48e 9%, #7fb5ea 16%, #4f93e6 41%,
+      #8fbde9 66%, #ffb070 74%, #ff6a3a 78%, #3a2a50 83%, #1a2340 90%, #1a2340 100%);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.25), 0 1px 4px rgba(0,0,0,.4); cursor: pointer;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 16px; height: 16px; border: none; border-radius: 50%;
+    background: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.25); cursor: pointer;
+  }
+  .tick { position: absolute; top: 12px; font-size: 11px; opacity: .65; transform: translateX(-50%); white-space: nowrap; }
+  .foot { flex-wrap: wrap; row-gap: 6px; }
+  .quality { align-items: center; }
+  .quality button { padding: 3px 10px; font-size: 12px; }
+  .weather { margin: -6px 0 10px; }
+  .wx { justify-content: flex-start; align-items: center; }
+  .wx button { padding: 3px 9px; font-size: 12px; }
+  .ql { font-size: 12px; opacity: .75; margin-right: 2px; }
+  #fps { font-size: 11px; opacity: .6; margin-left: 6px; font-variant-numeric: tabular-nums; min-width: 44px; }
+  #hint { font-size: 11px; opacity: .55; }
+  #status {
+    position: fixed; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; font-size: 15px; line-height: 1.8; letter-spacing: 1px;
+    color: rgba(255,255,255,.75); background: #05070d;
+  }
+  #status.err { color: #ffd2c4; }
+</style>
+</head>
+<body>
+<div id="title">海边 · 日出到日落<small>Three.js</small></div>
+<div id="status">正在加载场景…</div>
+<script>
+  // 加载提示与出错提示：出了问题就把原因显示出来，而不是留下一片黑屏
+  (function () {
+    var st = document.getElementById('status');
+    window.__showError = function (msg) {
+      if (window.__errShown) return;
+      window.__errShown = true;
+      st.textContent = msg;
+      st.className = 'err';
+      st.style.display = '';
+    };
+    window.addEventListener('error', function (e) {
+      if (!window.__sceneStarted) window.__showError('场景加载出错：' + (e.message || e.type));
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      if (!window.__sceneStarted) window.__showError('场景加载出错：' + e.reason);
+    });
+    setTimeout(function () {
+      if (!window.__sceneStarted) window.__showError('场景加载超时。请刷新重试；若仍然黑屏，可在地址栏打开 chrome://gpu 查看 WebGL 是否可用。');
+    }, 20000);
+  })();
+</script>
+
+<div id="panel">
+  <div class="row">
+    <div><span id="clock">05:00</span><span id="phase">黎明</span></div>
+    <div class="btns">
+      <button id="play">⏸ 暂停</button>
+      <button id="realtime" title="与电脑时钟同步，按真实速度运行">🕐 实时</button>
+      <button data-s="0.5">0.5×</button>
+      <button data-s="1" class="on">1×</button>
+      <button data-s="2">2×</button>
+      <button data-s="4">4×</button>
+    </div>
+  </div>
+  <div class="track">
+    <input type="range" id="timeline" min="0" max="1000" step="1" value="0">
+    <span class="tick" id="tRise">日出</span>
+    <span class="tick" id="tNoon">正午</span>
+    <span class="tick" id="tSet">日落</span>
+  </div>
+  <div class="row weather">
+    <div class="btns wx">
+      <span class="ql">天气</span>
+      <button data-w="clear">☀️ 晴</button>
+      <button data-w="cloudy">⛅ 多云</button>
+      <button data-w="overcast">☁️ 阴</button>
+      <button data-w="drizzle">🌦️ 小雨</button>
+      <button data-w="rain">🌧️ 暴雨</button>
+      <button data-w="storm">⛈️ 雷暴</button>
+    </div>
+  </div>
+  <div class="row foot">
+    <div class="btns quality">
+      <span class="ql">画质</span>
+      <button data-q="high">高</button>
+      <button data-q="medium">中</button>
+      <button data-q="low">低</button>
+      <span id="fps"></span>
+    </div>
+    <div id="hint">拖动环顾 · 空格暂停 · G 海鸥 · T 翻身海龟 · N 海龟之夜</div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+function mulberry32(a) {
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+
+// ---------- 地形：海岸线与沙滩高度 ----------
+// sandBase 与 GLSL 的 sandH 完全一致（海水靠它算水深）；landExtras 只作用在浪打不到的地方，负责沙丘和起伏
+const shoreZ = x => 2.0 + 2.5 * Math.sin(x * 0.045) + 1.2 * Math.sin(x * 0.11 + 1.3) + 0.6 * Math.sin(x * 0.23 + 0.5)
+  + 0.35 * Math.sin(x * 0.52 + 0.3) + 0.15 * Math.sin(x * 1.13 + 2.0);
+// 水下沙坝（off = 离岸距离），浪会在沙坝上提前破碎，沙坝断开处形成离岸流缺口
+function sandBars(x, off) {
+  const c1 = 22 + 6 * Math.sin(x * 0.031 + 0.7) + 3 * Math.sin(x * 0.077);
+  const a1 = Math.max(0, 0.32 + 0.3 * Math.sin(x * 0.053 + 2.0) + 0.12 * Math.sin(x * 0.13));
+  const c2 = 46 + 8 * Math.sin(x * 0.022 + 1.9);
+  const a2 = 0.3 + 0.2 * Math.sin(x * 0.041);
+  const t1 = (off - c1) / 5, t2 = (off - c2) / 8;
+  return a1 * Math.exp(-t1 * t1) + a2 * Math.exp(-t2 * t2);
+}
+function sandBase(x, z) {
+  const d = z - shoreZ(x);
+  let h = d * 0.07;
+  h += smoothstep(6, 30, d) * (0.5 + 0.35 * Math.sin(x * 0.09 + 0.4) * Math.sin(z * 0.13));
+  h += sandBars(x, -d);
+  return Math.max(h, -5);
+}
+
+function hash2(ix, iz) {
+  let h = Math.imul(ix, 374761393) + Math.imul(iz, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function noise2(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx), uz = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz), b = hash2(ix + 1, iz), c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+}
+function fbm2(x, z, oct = 4) {
+  let v = 0, a = 0.5;
+  for (let i = 0; i < oct; i++) {
+    v += a * noise2(x, z);
+    const nx = 1.6 * x - 1.2 * z + 13.1, nz = 1.2 * x + 1.6 * z + 7.7;
+    x = nx; z = nz; a *= 0.5;
+  }
+  return v;
+}
+function landExtras(x, z) {
+  const d = z - shoreZ(x);
+  const w = smoothstep(6, 12, d);
+  if (w <= 0) return 0;
+  const dunes = (fbm2(x * 0.03, z * 0.03) - 0.47) * 1.8 * smoothstep(10, 30, d);
+  const swells = (noise2(x * 0.08, z * 0.08 + 4.4) - 0.5) * 0.9 * smoothstep(8, 16, d);
+  const hummocks = (noise2(x * 0.17 + 3.1, z * 0.17) - 0.5) * 0.55 + swells;
+  const bumps = (noise2(x * 0.55, z * 0.55 + 9.2) - 0.5) * 0.1;
+  const berm = 0.18 * Math.exp(-(((d - 9) / 2.5) ** 2)) * (0.6 + 0.4 * Math.sin(x * 0.07));   // 高潮线沙埂
+  return w * (dunes + hummocks + bumps + berm);
+}
+
+// ---------- 渲染器 / 场景 / 相机 ----------
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+} catch (err) {
+  window.__showError('无法启动 3D 渲染（WebGL 不可用）。请在 Chrome「设置 → 系统」中开启“使用图形加速”，然后重启浏览器；也可以在地址栏打开 chrome://gpu 查看 WebGL 状态。');
+  throw err;
+}
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x000000, 0.0045);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 5000);
+camera.position.set(0, 6.8, 46);     // 站在椰林后面，透过树干看海
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3, 0);
+controls.enableDamping = true;
+controls.enablePan = false;
+controls.minDistance = 8;
+controls.maxDistance = 60;
+controls.minPolarAngle = 0.6;
+controls.maxPolarAngle = 1.53;
+controls.minAzimuthAngle = -1.0;
+controls.maxAzimuthAngle = 1.0;
+controls.update();
+
+const qualityMats = [];   // 随画质切换着色器细节（QUALITY 宏）的材质
+
+// ---------- 共享 uniforms ----------
+const U = {
+  uTime: { value: 0 },
+  uSunDir: { value: new THREE.Vector3() },
+  uMoonDir: { value: new THREE.Vector3() },
+  uZenith: { value: new THREE.Color() },
+  uHorizon: { value: new THREE.Color() },
+  uSunColor: { value: new THREE.Color() },
+  uGlow: { value: 0 },
+  uNight: { value: 0 },
+  uSunVis: { value: 0 },
+  uCloudLight: { value: 0 },
+  uCloudTime: { value: 0 },
+  uCloudCover: { value: 0.6 },
+  uOvercast: { value: 0 },
+  uStorm: { value: 0 },
+  uRain: { value: 0 },
+  uWetness: { value: 0 },
+  uSea: { value: 1 },
+  uFlash: { value: 0 },
+  uFog: { value: 0 },
+  uWind: { value: 1 },
+  uSunI: { value: 0 },
+  uMoonI: { value: 0 },
+  uDeep: { value: new THREE.Color() },
+  uShallow: { value: new THREE.Color() },
+  uFoamCol: { value: new THREE.Color() },
+};
+
+const COMMON = /* glsl */`
+#ifndef QUALITY
+#define QUALITY 2
+#endif
+uniform float uTime;
+uniform vec3 uSunDir, uMoonDir, uZenith, uHorizon, uSunColor;
+uniform float uGlow, uNight, uSunVis, uCloudLight, uSunI, uMoonI, uCloudTime, uCloudCover;
+// 天气：阴天程度、风暴暗度、雨量、地面湿度、海况（浪高倍数）、闪电亮度、雾
+uniform float uOvercast, uStorm, uRain, uWetness, uSea, uFlash, uFog;
+
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float hash13(vec3 p3){ p3 = fract(p3 * 0.1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y) * p3.z); }
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), u.x),
+             mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), u.x), u.y);
+}
+const mat2 ROT = mat2(1.6, 1.2, -1.2, 1.6);
+float fbm3(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 3; i++){ v += a * vnoise(p); p = ROT * p; a *= 0.5; } return v; }
+float fbm5(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++){ v += a * vnoise(p); p = ROT * p; a *= 0.5; } return v; }
+
+float shoreZ(float x){
+  return 2.0 + 2.5 * sin(x * 0.045) + 1.2 * sin(x * 0.11 + 1.3) + 0.6 * sin(x * 0.23 + 0.5)
+       + 0.35 * sin(x * 0.52 + 0.3) + 0.15 * sin(x * 1.13 + 2.0);
+}
+float sandBars(float x, float off){
+  float c1 = 22.0 + 6.0 * sin(x * 0.031 + 0.7) + 3.0 * sin(x * 0.077);
+  float a1 = max(0.0, 0.32 + 0.3 * sin(x * 0.053 + 2.0) + 0.12 * sin(x * 0.13));
+  float c2 = 46.0 + 8.0 * sin(x * 0.022 + 1.9);
+  float a2 = 0.3 + 0.2 * sin(x * 0.041);
+  float t1 = (off - c1) / 5.0, t2 = (off - c2) / 8.0;
+  return a1 * exp(-t1 * t1) + a2 * exp(-t2 * t2);
+}
+float sandH(vec2 p){
+  float d = p.y - shoreZ(p.x);
+  float h = d * 0.07;
+  h += smoothstep(6.0, 30.0, d) * (0.5 + 0.35 * sin(p.x * 0.09 + 0.4) * sin(p.y * 0.13));
+  h += sandBars(p.x, -d);
+  return max(h, -5.0);
+}
+
+// 天空底色：天顶/地平线渐变 + 太阳周围的辉光
+vec3 skyBase(vec3 dir){
+  float hp = max(dir.y, 0.0);
+  vec3 col = mix(uHorizon, uZenith, pow(hp, 0.5));
+  float cosA = dot(dir, uSunDir);
+  float sunUp = smoothstep(-0.3, 0.0, uSunDir.y);
+  float band = exp(-hp * 5.0);
+  col += uSunColor * pow(clamp(cosA * 0.5 + 0.5, 0.0, 1.0), 6.0) * band * uGlow * sunUp;
+  col += uSunColor * pow(max(cosA, 0.0), 24.0) * 0.5 * (0.4 + uGlow) * sunUp;
+  col += uSunColor * pow(max(cosA, 0.0), 350.0) * 1.2 * sunUp;
+  col += vec3(0.5, 0.6, 0.9) * pow(max(dot(dir, uMoonDir), 0.0), 60.0) * 0.12 * uNight;
+  col += vec3(0.7, 0.75, 1.0) * uFlash * 0.35;          // 闪电把整片天空照亮
+  return col;
+}
+
+// ---- 云 ----
+const vec2 WIND = vec2(0.94, 0.34);
+// 低空积云密度：域扭曲随时间演化，云团会慢慢翻滚变形；
+// 有的区域是大朵积云，有的是碎小云团，也有成片的晴空
+float cumulusDensity(vec2 q, float t, bool hi){
+  vec2 w = vec2(fbm3(q * 0.45 + vec2(t * 0.020, -t * 0.013)),
+                fbm3(q * 0.45 + vec2(5.2, 1.3) - t * 0.017)) - 0.45;
+  vec2 qq = q + w * 1.4;
+  float big = hi ? fbm5(qq) : fbm3(qq);
+  float small = hi ? fbm5(qq * 2.3 + 7.0) : fbm3(qq * 2.3 + 7.0);
+  float region = vnoise(q * 0.09 + vec2(3.0, t * 0.003));
+  float n = mix(big, small * 1.05, smoothstep(0.4, 0.7, region));
+  float cov = uCloudCover * (0.35 + 0.9 * vnoise(q * 0.13 + vec2(-t * 0.004, 9.0)));
+  float th = mix(0.78, 0.38, clamp(cov, 0.0, 1.0));
+  return smoothstep(th, th + 0.2, n);
+}
+vec4 cumulusLayer(vec3 dir, bool hi){
+  if (dir.y <= 0.0) return vec4(0.0);
+  float t = uCloudTime;
+  vec2 q = dir.xz / (dir.y + 0.08) * 0.8 - WIND * t * 0.045;
+  float d = cumulusDensity(q, t, hi);
+  d = mix(d, 0.72 + 0.28 * d, uOvercast);               // 阴天：云层连成一片，只剩明暗起伏
+  if (d <= 0.001) return vec4(0.0);
+  float cosA = dot(dir, uSunDir);
+  // 朝太阳方向再采样一次：迎光的边缘亮，背光和厚的地方暗，云就有了体积感
+  float shade = 0.6;
+  if (hi) {
+    float d2 = cumulusDensity(q + normalize(uSunDir.xz) * 0.09, t, false);
+    shade = clamp(0.62 + (d - d2) * 1.3, 0.15, 1.0) * (1.0 - 0.35 * d);
+  }
+  // 太阳低时云底偏暗偏紫、迎光边缘更亮，和天空拉开反差
+  float dayAmt = smoothstep(0.02, 0.3, uSunDir.y);
+  vec3 amb = mix(uHorizon, uZenith, mix(0.75, 0.4, dayAmt)) * mix(0.5, 0.85, dayAmt);
+  float fw = pow(clamp(cosA * 0.5 + 0.5, 0.0, 1.0), 3.0);
+  float litShade = mix(pow(shade, 1.6) * 1.4, shade, dayAmt);
+  vec3 col = amb * (0.7 + 0.3 * (1.0 - d)) + uSunColor * uCloudLight * (0.35 + 1.3 * fw) * litShade;
+  col += uSunColor * pow(max(cosA, 0.0), 10.0) * (1.0 - d) * 1.6 * uCloudLight;   // 太阳附近的透光银边
+  col += vec3(0.05, 0.06, 0.09) * uNight * (0.5 + 0.5 * shade);                     // 月光
+  col = mix(col, amb * 0.9 + uSunColor * uCloudLight * 0.25, uOvercast * 0.6);     // 阴天光线漫射，没有明显的迎光面
+  col *= mix(1.0, 0.38, uStorm * (0.6 + 0.4 * d));                                  // 风暴云又厚又暗
+  col += vec3(0.75, 0.8, 1.0) * uFlash * (0.6 + 1.2 * d);                           // 闪电时云层内部发亮
+  return vec4(col, d * mix(0.92, 1.0, uOvercast) * smoothstep(0.0, mix(0.12, 0.04, uOvercast), dir.y));
+}
+// 高空卷云：被高空风拉成丝缕，飘得更快；日出前、日落后仍会被染红
+vec4 cirrusLayer(vec3 dir){
+  if (dir.y <= 0.0) return vec4(0.0);
+  float t = uCloudTime;
+  vec2 uv = dir.xz / (dir.y + 0.25) * 0.6;
+  vec2 cq = vec2(dot(uv, WIND), dot(uv, vec2(-WIND.y, WIND.x))) * vec2(0.6, 4.5) - vec2(t * 0.05, 0.0);
+  float ci = fbm5(cq + vec2(0.0, fbm3(cq * 0.5 + t * 0.01) * 1.5));
+  float mask = smoothstep(0.45, 0.75, vnoise(uv * 0.5 + vec2(t * 0.006, 4.0)));
+  float a = smoothstep(0.5, 0.85, ci) * mask * 0.55 * smoothstep(0.02, 0.2, dir.y) * (1.0 - uOvercast);
+  float fw = pow(clamp(dot(dir, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
+  vec3 col = mix(uHorizon, uZenith, 0.4) * 0.8 + uSunColor * smoothstep(-0.22, 0.05, uSunDir.y) * (0.5 + 1.0 * fw);
+  return vec4(col, a);
+}
+
+// Gerstner 波：x=方向角(相对+z), y=波长, z=振幅, w=陡度
+const int NW = 9;
+const vec4 WAVES[9] = vec4[9](
+  vec4( 0.00, 41.0, 0.50, 0.75),
+  vec4( 0.42, 26.0, 0.30, 0.80),
+  vec4(-0.55, 19.0, 0.24, 0.80),
+  vec4( 0.95, 13.0, 0.15, 0.75),
+  vec4(-1.15,  9.5, 0.10, 0.70),
+  vec4( 0.25,  7.1, 0.07, 0.70),
+  vec4(-0.35,  5.0, 0.05, 0.65),
+  vec4( 1.40,  3.6, 0.035, 0.60),
+  vec4(-0.80,  2.7, 0.025, 0.60)
+);
+// 低频噪声扭曲相位，让波峰线弯曲、断续，而不是一条条平行直线
+vec2 waveWarp(vec2 p){
+  return (vec2(vnoise(p * 0.006 + vec2(uTime * 0.010, 0.0)),
+               vnoise(p * 0.006 + vec2(9.1, -uTime * 0.012))) - 0.5) * 16.0;
+}
+// 振幅随位置和时间缓慢起伏，形成一组大一组小的浪群
+vec3 waveMods(vec2 p){
+  return vec3(vnoise(p * 0.010 + vec2(uTime * 0.020, 0.0)),
+              vnoise(p * 0.017 + vec2(5.2, -uTime * 0.015)),
+              vnoise(p * 0.007 + vec2(-uTime * 0.012, 2.7)));
+}
+float waveMod(vec3 m, int i){
+  int r = i % 3;
+  float s = r == 0 ? m.x : (r == 1 ? m.y : m.z);
+  float fi = float(i);
+  return (0.3 + 1.4 * s) * (0.75 + 0.25 * sin(uTime * 0.07 * (fi + 1.0) + fi));
+}
+
+// 近岸碎浪：两列周期不同、强弱随机的浪叠加，到达时间也带随机抖动
+float breakerNoise(float x){ return vnoise(vec2(x * 0.05, uTime * 0.04)) * 5.0 + vnoise(vec2(x * 0.15, 3.0)) * 1.5; }
+float breakerZone(float depth0){ return smoothstep(0.15, 0.6, depth0) * (1.0 - smoothstep(1.2, 2.6, depth0)); }
+float trainPhase(int k, float bn){
+  float fk = float(k);
+  float om = k == 0 ? 1.3 : 1.02;
+  return uTime * om + bn * (1.0 + 0.4 * fk) + 1.6 * sin(uTime * 0.11 + fk * 2.3)
+       + 2.5 * vnoise(vec2(uTime * 0.05, fk * 5.0 + 1.0));
+}
+float trainAmp(float x, int k){
+  float fk = float(k);
+  return 0.25 + vnoise(vec2(x * 0.025 + fk * 7.0, uTime * 0.09 + fk * 3.0));
+}
+struct Breaker { float h; float dhdd; float front; float trail; };
+Breaker breakers(vec2 p, float depth0){
+  Breaker b = Breaker(0.0, 0.0, 0.0, 0.0);
+  float zone = breakerZone(depth0);
+  if (zone <= 0.0) return b;
+  float d = shoreZ(p.x) - p.y;          // 离岸距离
+  float bn = breakerNoise(p.x);
+  for (int k = 0; k < 2; k++) {
+    float kk = k == 0 ? 0.55 : 0.41;
+    float ph = d * kk + trainPhase(k, bn);
+    float amp = trainAmp(p.x, k);
+    float s = 0.5 + 0.5 * sin(ph);
+    b.h += pow(s, 5.0) * 0.30 * uSea * amp * zone;
+    b.dhdd += 0.30 * uSea * amp * zone * 5.0 * pow(s, 4.0) * 0.5 * cos(ph) * kk;
+    float vis = smoothstep(0.45, 0.95, amp);
+    b.front = max(b.front, pow(s, 14.0) * vis);
+    b.trail = max(b.trail, (1.0 - smoothstep(0.0, 1.8, mod(ph - 1.5707963, 6.2831853))) * vis);
+  }
+  return b;
+}
+// 冲上沙滩的水位：每道浪的大小不同，冲得远近也不同
+float swashLevel(vec2 p){
+  float bn = breakerNoise(p.x);
+  float s = 0.04 * sin(uTime * 0.35 + p.x * 0.02);
+  for (int k = 0; k < 2; k++)
+    s += 0.10 * mix(1.0, uSea, 0.6) * trainAmp(p.x, k) * pow(0.5 + 0.5 * sin(trainPhase(k, bn) - 0.4), 3.0);
+  return s;
+}
+`;
+
+// ---------- 天空 ----------
+const SKY_VS = /* glsl */`
+varying vec3 vWorld;
+void main(){
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorld = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+const SKY_FS = /* glsl */`
+varying vec3 vWorld;
+void main(){
+  vec3 dir = normalize(vWorld - cameraPosition);
+  vec3 col = skyBase(dir);
+  float cosA = dot(dir, uSunDir);
+
+  // 太阳
+  col += uSunColor * smoothstep(0.99950, 0.99972, cosA) * 16.0 * uSunVis;
+
+  // 星星
+  if (uNight > 0.001 && dir.y > 0.0) {
+    vec3 sp = dir * 380.0;
+    float h = hash13(floor(sp));
+    if (h > 0.9965) {
+      float d = length(fract(sp) - 0.5);
+      float tw = 0.55 + 0.45 * sin(uTime * (2.0 + h * 6.0) + h * 400.0);
+      col += vec3(0.85, 0.9, 1.0) * smoothstep(0.42, 0.0, d) * tw * uNight * smoothstep(0.0, 0.2, dir.y) * 1.6;
+    }
+  }
+
+  // 月亮
+  float cm = dot(dir, uMoonDir);
+  float moon = smoothstep(0.99962, 0.99978, cm);
+  float crater = 0.75 + 0.25 * vnoise(dir.xy * 900.0 + 3.0);
+  col = mix(col, vec3(1.0, 0.96, 0.88) * 2.2 * crater, moon * uNight);
+
+  // 云：高空卷云在后，低空积云在前
+  vec4 ci = cirrusLayer(dir);
+  col = mix(col, ci.rgb, ci.a);
+  vec4 cu = cumulusLayer(dir, true);
+  col = mix(col, cu.rgb, cu.a);
+
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(1500, 48, 24),
+  new THREE.ShaderMaterial({ uniforms: U, vertexShader: SKY_VS, fragmentShader: COMMON + SKY_FS, side: THREE.BackSide, depthWrite: false })
+);
+sky.renderOrder = -1;
+sky.frustumCulled = false;
+scene.add(sky);
+
+// ---------- 海面 ----------
+const WATER_VS = /* glsl */`
+varying vec3 vWorld;
+varying vec2 vBase;
+varying vec3 vMods;
+varying vec2 vWarp;
+varying float vCrest;
+void main(){
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vec2 p = wp.xz;
+  float depth0 = -sandH(p);
+  float shoal = smoothstep(0.1, 4.5, depth0);
+  float camDist = length(p - cameraPosition.xz);
+  vec3 m = waveMods(p);
+  vec2 warp = waveWarp(p);
+  vec2 pw = p + warp;
+  vec3 disp = vec3(0.0);
+  float ampSum = 0.0;
+  for (int i = 0; i < NW; i++) {
+    vec4 w = WAVES[i];
+    float k = 6.2831853 / w.y;
+    float om = sqrt(9.8 * k);
+    vec2 D = vec2(sin(w.x), cos(w.x));
+    float fade = 1.0 - smoothstep(w.y * 6.0, w.y * 22.0, camDist);
+    float A = w.z * waveMod(m, i) * shoal * fade * uSea;     // 海况越差浪越高
+    float f = k * dot(D, pw) - om * uTime + float(i) * 1.7;
+    disp.xz += (w.w / uSea) * A * D * cos(f);               // 陡度同比缩小，避免波峰打结
+    disp.y += A * sin(f);
+    ampSum += w.z * fade;
+  }
+  vCrest = disp.y / max(ampSum, 0.001);
+  disp.y += breakers(p, depth0).h;
+  disp.y += swashLevel(p) * (1.0 - smoothstep(0.5, 5.0, depth0));
+  wp.xyz += disp;
+  vWorld = wp.xyz;
+  vBase = p;
+  vMods = m;
+  vWarp = warp;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+const WATER_FS = /* glsl */`
+uniform vec3 uDeep, uShallow, uFoamCol;
+varying vec3 vWorld;
+varying vec2 vBase;
+varying vec3 vMods;
+varying vec2 vWarp;
+varying float vCrest;
+void main(){
+  vec2 p = vBase;
+  vec2 pw = p + vWarp;
+  float sh = sandH(p);
+  float depth0 = -sh;
+  float depth = vWorld.y - sh;
+  if (depth < -0.02) discard;
+  float dist = length(vWorld - cameraPosition);
+  float shoal = smoothstep(0.1, 4.5, depth0);
+
+  // 法线：Gerstner 波（随距离淡出短波以防闪烁）
+  vec3 n = vec3(0.0, 1.0, 0.0);
+  for (int i = 0; i < NW; i++) {
+    #if QUALITY == 0
+    if (i >= 6) break;
+    #endif
+    vec4 w = WAVES[i];
+    float k = 6.2831853 / w.y;
+    float om = sqrt(9.8 * k);
+    vec2 D = vec2(sin(w.x), cos(w.x));
+    float fadeN = 1.0 - smoothstep(w.y * 10.0, w.y * 45.0, dist);
+    float WA = k * w.z * waveMod(vMods, i) * shoal * fadeN * uSea;
+    float f = k * dot(D, pw) - om * uTime + float(i) * 1.7;
+    float c = cos(f);
+    n.x -= D.x * WA * c;
+    n.z -= D.y * WA * c;
+    n.y -= (w.w / uSea) * WA * sin(f);
+  }
+  Breaker br = breakers(p, depth0);
+  n.z += br.dhdd;
+
+  // 细碎涟漪
+  #if QUALITY >= 1
+  float rs = 0.22 * (1.0 - smoothstep(15.0, 140.0, dist));
+  if (rs > 0.001) {
+    vec2 q = p * 0.45 + vec2(uTime * 0.06, uTime * 0.11);
+    float e = 0.12;
+    float h0 = fbm3(q);
+    n.x -= (fbm3(q + vec2(e, 0.0)) - h0) / e * rs;
+    n.z -= (fbm3(q + vec2(0.0, e)) - h0) / e * rs;
+  }
+  #endif
+  // 雨点打在海面上的细碎波纹（每秒换 8 次图案，像雨点不停落下）
+  if (uRain > 0.01) {
+    vec2 rq = p * 4.0 + floor(uTime * 8.0) * 1.7;
+    float r0 = vnoise(rq), rx = vnoise(rq + vec2(0.25, 0.0)), rz = vnoise(rq + vec2(0.0, 0.25));
+    float rf = uRain * 1.4 * (1.0 - smoothstep(10.0, 90.0, dist));
+    n.x -= (rx - r0) * rf;
+    n.z -= (rz - r0) * rf;
+  }
+  vec3 N = normalize(n);
+
+  vec3 V = normalize(cameraPosition - vWorld);
+  float NdV = max(dot(N, V), 0.0);
+  float fres = 0.02 + 0.98 * pow(1.0 - NdV, 5.0);
+  vec3 R = reflect(-V, N);
+  R.y = abs(R.y);
+  vec3 refl = skyBase(R);
+  #if QUALITY >= 2
+  if (fres > 0.04) {           // 海面倒影里也有移动的云（简化版，开销较大，只在高画质开启）
+    vec4 rc = cumulusLayer(R, false);
+    refl = mix(refl, rc.rgb, rc.a);
+  }
+  #endif
+
+  vec3 body = mix(uShallow, uDeep, smoothstep(0.0, 5.0, depth));
+  float sss = pow(clamp(dot(-V, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 4.0) * clamp(vCrest * 0.5 + 0.5, 0.0, 1.0);
+  body += uSunColor * vec3(0.05, 0.35, 0.3) * sss * uSunI * 0.6;
+  vec3 col = mix(body, refl, fres);
+
+  // 太阳/月亮在海面上的光路：远处高光变宽，形成拉长的光带
+  float specN = mix(900.0, 60.0, smoothstep(30.0, 600.0, dist));
+  float sd = max(dot(R, uSunDir), 0.0);
+  col += uSunColor * uSunI * (pow(sd, specN) * specN * 0.012
+       + pow(sd, 6000.0) * 25.0 * (1.0 - smoothstep(50.0, 300.0, dist)));
+  float md = max(dot(R, uMoonDir), 0.0);
+  col += vec3(0.8, 0.85, 1.0) * uMoonI * pow(md, specN * 0.7) * specN * 0.006;
+
+  // 浪花泡沫
+  #if QUALITY >= 1
+  float fn = fbm3(p * 0.55 + vec2(0.0, uTime * 0.18));
+  #else
+  float fn = vnoise(p * 0.55 + vec2(0.0, uTime * 0.18)) * 0.88;
+  #endif
+  float fn2 = vnoise(p * 2.5 - uTime * 0.3);
+  float speck = smoothstep(0.3, 0.6, fn2 * 0.5 + fn * 0.5 + 0.25);
+  float edgeFoam = 1.0 - smoothstep(0.0, 0.12 + 0.18 * fn, depth);
+  float breakFoam = (br.front * 0.9 + br.trail * smoothstep(0.35, 0.75, fn) * 0.7) * breakerZone(depth0);
+  float surf = (1.0 - smoothstep(0.1, 0.9, depth)) * smoothstep(0.45, 0.8, fn + fn2 * 0.3);
+  float crestFoam = smoothstep(0.45, 0.9, vCrest) * smoothstep(0.5, 0.75, fn) * shoal * (1.0 - smoothstep(80.0, 300.0, dist));
+  float foam = clamp(edgeFoam * 0.85 + (breakFoam + surf * 0.6 + crestFoam * 0.5) * speck, 0.0, 1.0);
+  col = mix(col, uFoamCol, foam);
+
+  // 雾：与该方向的地平线天空颜色融合
+  vec3 fogCol = skyBase(normalize(vec3(-V.x, 0.0, -V.z)));
+  col = mix(col, fogCol, 1.0 - exp(-dist * 0.0018 * (1.0 + 4.0 * uFog)));
+
+  float alpha = mix(0.35, 1.0, smoothstep(0.0, 1.4, depth));
+  alpha = max(alpha, foam) * smoothstep(-0.02, 0.03, depth);
+  gl_FragColor = vec4(col, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
+{
+  // 非均匀网格：中心密、远处疏
+  const N = 400, EXT = 1500, POW = 2.4;
+  const geo = new THREE.PlaneGeometry(2, 2, N, N);
+  geo.rotateX(-Math.PI / 2);
+  const pa = geo.attributes.position;
+  for (let i = 0; i < pa.count; i++) {
+    const u = pa.getX(i), v = pa.getZ(i);
+    pa.setXYZ(i, Math.sign(u) * Math.pow(Math.abs(u), POW) * EXT, 0, Math.sign(v) * Math.pow(Math.abs(v), POW) * EXT + 5);
+  }
+  const water = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+    uniforms: U, vertexShader: COMMON + WATER_VS, fragmentShader: COMMON + WATER_FS, transparent: true,
+  }));
+  qualityMats.push(water.material);
+  water.frustumCulled = false;
+  scene.add(water);
+}
+
+// ---------- 沙滩 ----------
+const SAND = { SX: 400, SZ: 250, X0: -250, Z0: -110, W: 500, D: 200 };
+SAND.DX = SAND.W / SAND.SX;
+SAND.DZ = SAND.D / SAND.SZ;
+SAND.h = new Float32Array((SAND.SX + 1) * (SAND.SZ + 1));
+// 按网格三角形插值，得到与沙滩网格完全贴合的高度（摆放小物件用）
+function sandMeshHeight(x, z) {
+  const gx = (x - SAND.X0) / SAND.DX, gz = (z - SAND.Z0) / SAND.DZ;
+  const ix = Math.min(SAND.SX - 1, Math.max(0, Math.floor(gx)));
+  const iz = Math.min(SAND.SZ - 1, Math.max(0, Math.floor(gz)));
+  const u = gx - ix, v = gz - iz, W1 = SAND.SX + 1, H = SAND.h;
+  const ha = H[iz * W1 + ix], hb = H[(iz + 1) * W1 + ix], hc = H[(iz + 1) * W1 + ix + 1], hd = H[iz * W1 + ix + 1];
+  return u + v <= 1 ? ha + (hd - ha) * u + (hb - ha) * v : hc + (hb - hc) * (1 - u) + (hd - hc) * (1 - v);
+}
+{
+  const geo = new THREE.PlaneGeometry(SAND.W, SAND.D, SAND.SX, SAND.SZ);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, 0, SAND.Z0 + SAND.D / 2);
+  const pa = geo.attributes.position;
+  const colors = [];
+  const dry = new THREE.Color('#ecd6a6'), dry2 = new THREE.Color('#d6bb86'), gold = new THREE.Color('#dfbf86'),
+        pale = new THREE.Color('#f4e6c4'), under = new THREE.Color('#8a7450'), deep = new THREE.Color('#4d4a3c');
+  const c = new THREE.Color();
+  for (let i = 0; i < pa.count; i++) {
+    const x = pa.getX(i), z = pa.getZ(i);
+    const ex = landExtras(x, z);
+    const h = sandBase(x, z) + ex;
+    pa.setY(i, h);
+    SAND.h[i] = h;
+    const nz = (Math.sin(x * 0.37 + z * 0.21) * Math.sin(z * 0.43 - x * 0.11) + 1) * 0.5;
+    c.copy(dry).lerp(dry2, nz * 0.5 + Math.random() * 0.1);
+    c.lerp(gold, smoothstep(0.55, 0.8, noise2(x * 0.06, z * 0.06)) * 0.6);        // 成片偏金的沙
+    c.lerp(pale, smoothstep(0.1, 0.5, ex) * 0.5);                                 // 沙丘顶被晒得更白
+    if (Math.random() < 0.04) c.lerp(pale, 0.5);                                   // 碎贝壳颗粒
+    c.lerp(under, smoothstep(0.0, -0.8, h));
+    c.lerp(deep, smoothstep(-1.0, -4.0, h));
+    colors.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+
+  // 着色器里补上：随浪进退的湿沙（更暗、更亮滑）、沙粒质感、风吹沙纹和退潮细沟
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
+  mat.onBeforeCompile = shader => {
+    Object.assign(shader.uniforms, U);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSandWorld;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvSandWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSandWorld;\n' + COMMON)
+      .replace('#include <color_fragment>', /* glsl */`#include <color_fragment>
+        vec2 sandP = vSandWorld.xz;
+        float sandCamD = length(vSandWorld - cameraPosition);
+        // 浪最多冲到 0.3 左右，更高的沙子不用算水位
+        float sandSwash = vSandWorld.y < 0.7 ? swashLevel(sandP) : 0.0;
+        float wetStatic = 1.0 - smoothstep(0.24, 0.45, vSandWorld.y);
+        float wetNow = 1.0 - smoothstep(sandSwash + 0.02, sandSwash + 0.14, vSandWorld.y);
+        float sandWet = max(max(wetStatic * 0.75, wetNow), uWetness * 0.8);   // 下雨后整片沙滩被淋湿
+        diffuseColor.rgb *= mix(1.0, 0.6, sandWet);
+        #if QUALITY >= 1
+        if (sandCamD < 40.0) {
+          float grain = vnoise(sandP * 9.0) * 0.5 + vnoise(sandP * 23.0 + 4.0) * 0.5;
+          diffuseColor.rgb *= mix(1.0, 0.86 + 0.28 * grain, 1.0 - smoothstep(8.0, 40.0, sandCamD));
+        }
+        #endif`)
+      .replace('#include <roughnessmap_fragment>', /* glsl */`#include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.3, clamp(wetNow * 0.9 + wetStatic * 0.25 + uWetness * 0.6, 0.0, 1.0));`)
+      .replace('#include <normal_fragment_maps>', /* glsl */`#include <normal_fragment_maps>
+        #if QUALITY >= 1
+        {
+          float rf = 1.0 - smoothstep(10.0, 38.0, sandCamD);
+          if (rf > 0.0) {
+            // 沙纹方向随位置缓慢偏转，只在部分区域出现，强弱不一
+            float ang = (vnoise(sandP * 0.05 + 3.0) - 0.5) * 1.6;
+            vec2 kv = vec2(sin(ang), cos(ang)) * 8.5;
+            float ph = dot(sandP, kv) + vnoise(sandP * 0.12) * 9.0 + vnoise(sandP * 0.6) * 2.5;
+            float ripMask = smoothstep(0.35, 0.75, vnoise(sandP * 0.09 + 11.0));
+            float amp = 0.011 * smoothstep(0.4, 0.75, vSandWorld.y) * ripMask * (0.5 + vnoise(sandP * 0.4 + 7.0));
+            float rillPh = sandP.x * 3.1 + vnoise(sandP * vec2(0.4, 1.5)) * 9.0;
+            vec2 g = amp * cos(ph) * kv + 0.012 * wetStatic * cos(rillPh) * vec2(3.1, 0.0);
+            normal = normalize(normal + (viewMatrix * vec4(-g.x * rf, 0.0, -g.y * rf, 0.0)).xyz);
+          }
+        }
+        #endif`);
+  };
+  qualityMats.push(mat);
+  const sand = new THREE.Mesh(geo, mat);
+  sand.receiveShadow = true;
+  scene.add(sand);
+}
+
+// ---------- 椰林 ----------
+const trunkMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
+const frondMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, side: THREE.DoubleSide });
+// 每棵树的叶子合并成一个网格，随风抖动放到顶点着色器里：离树冠中心越远摆得越大，每棵树相位不同
+frondMat.onBeforeCompile = sh => {
+  sh.uniforms.uTime = U.uTime;
+  sh.uniforms.uWind = U.uWind;
+  sh.vertexShader = 'uniform float uTime, uWind;\n' + sh.vertexShader.replace('#include <begin_vertex>', /* glsl */`#include <begin_vertex>
+    float fr = length(position.xz);
+    float fa = atan(position.z, position.x);
+    vec3 wo = modelMatrix[3].xyz;
+    float fph = uTime * (1.2 + 0.5 * uWind) + fa * 2.0 + wo.x * 0.37 + wo.z * 0.23;
+    transformed.y += sin(fph) * 0.012 * uWind * fr * fr;
+    transformed.xz += vec2(cos(fa), sin(fa)) * sin(fph * 0.8 + 1.3) * 0.03 * uWind * fr;`);
+};
+const groundFrondMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide });
+const crownBitsMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 });
+const crowns = [];
+function coloredSphere(r, hex, x, y, z) {
+  const g = new THREE.SphereGeometry(r, 10, 8);
+  g.translate(x, y, z);
+  const c = new THREE.Color(hex), n = g.attributes.position.count, col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) col.set([c.r, c.g, c.b], i * 3);
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
+}
+
+function makeFrondGeometry(L, rand, cBase, cTip) {
+  const pos = [], col = [];
+  const spine = (s, out) => out.set(L * s, L * (0.30 * s - 0.62 * s * s), 0);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), t = new THREE.Vector3();
+  const M = 30;
+  const push = (v, cc) => { pos.push(v.x, v.y, v.z); col.push(cc.r, cc.g, cc.b); };
+  for (let i = 0; i < M; i++) {
+    const s0 = 0.04 + 0.96 * i / M, s1 = s0 + 0.96 / M;
+    spine(s0, a); spine(s1, b);
+    // 中脉
+    const rw = 0.05 * (1 - s0) + 0.015;
+    const a1 = a.clone().setZ(rw), a2 = a.clone().setZ(-rw), b1 = b.clone().setZ(rw * 0.8), b2 = b.clone().setZ(-rw * 0.8);
+    push(a1, cBase); push(b1, cBase); push(a2, cBase);
+    push(a2, cBase); push(b1, cBase); push(b2, cBase);
+    // 两侧小叶
+    for (const side of [-1, 1]) {
+      const w = (1.35 * Math.pow(Math.sin(Math.PI * Math.min(s0 * 1.15, 1)), 0.6) * (1 - 0.35 * s0) + 0.12)
+              * (0.85 + rand() * 0.3) * L / 5;
+      spine(Math.min(1, s0 + 0.10), t);
+      t.y -= 0.45 * w * (0.6 + s0);
+      t.z += side * w;
+      const tipC = cTip.clone().lerp(cBase, rand() * 0.3);
+      push(a, cBase); push(b, cBase); push(t, tipC);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+function createPalm({ x, z, height, lean, leanDir, seed }) {
+  const rand = mulberry32(seed);
+  const palm = new THREE.Group();
+  palm.position.set(x, sandMeshHeight(x, z) - 0.3, z);
+  const ld = new THREE.Vector2(leanDir[0], leanDir[1]).normalize();
+
+  // 树干：朝海倾斜，越往上越回直，顶端略往陆地弯回；逐圈调整半径做出环节
+  const pts = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    const off = lean * height * (1.3 * t - 0.55 * t * t);
+    const wob = Math.sin(t * 3.0 + seed) * 0.25 * t;
+    pts.push(new THREE.Vector3(ld.x * off + wob * ld.y, t * height, ld.y * off - wob * ld.x));
+  }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const TS = 80, RS = 10;
+  const tg = new THREE.TubeGeometry(curve, TS, 1, RS, false);
+  const pa = tg.attributes.position;
+  const colors = [];
+  const barkA = new THREE.Color('#7d5d3e'), barkB = new THREE.Color('#463222'), cc = new THREE.Color();
+  const ctr = new THREE.Vector3(), v = new THREE.Vector3();
+  for (let i = 0; i <= TS; i++) {
+    const t = i / TS;
+    curve.getPointAt(t, ctr);
+    const ring = Math.pow((t * 26) % 1, 2.0);
+    const r = (0.36 - 0.16 * t) * (1 + 0.1 * ring) + 0.25 * Math.exp(-t * 25);
+    for (let j = 0; j <= RS; j++) {
+      const idx = i * (RS + 1) + j;
+      v.fromBufferAttribute(pa, idx).sub(ctr).multiplyScalar(r).add(ctr);
+      pa.setXYZ(idx, v.x, v.y, v.z);
+      cc.copy(barkA).lerp(barkB, ring * 0.8 + rand() * 0.1);
+      colors.push(cc.r, cc.g, cc.b);
+    }
+  }
+  tg.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  tg.computeVertexNormals();
+  const trunk = new THREE.Mesh(tg, trunkMat);
+  trunk.castShadow = true;
+  palm.add(trunk);
+
+  // 树冠
+  const crown = new THREE.Group();
+  crown.position.copy(curve.getPointAt(1));
+  palm.add(crown);
+  crowns.push({ crown, seed });
+
+  // 树冠中心和挂着的一串椰子（合并成一个网格）
+  const bits = [coloredSphere(0.32, '#4b5a2a', 0, 0, 0)];
+  const nuts = 2 + Math.floor(rand() * 5);
+  for (let i = 0; i < nuts; i++) {
+    const a = i / nuts * Math.PI * 2 + rand();
+    bits.push(coloredSphere(0.2, rand() < 0.3 ? '#6f7a2e' : '#5a4a22', Math.cos(a) * 0.3, -0.35 - rand() * 0.15, Math.sin(a) * 0.3));
+  }
+  const bitsMesh = new THREE.Mesh(mergeGeometries(bits), crownBitsMat);
+  bitsMesh.castShadow = true;
+  crown.add(bitsMesh);
+
+  // 叶片：新叶翘起、老叶下垂，合并成一个网格
+  const count = 11 + Math.floor(rand() * 5);
+  const green = new THREE.Color('#2f5d1f'), greenTip = new THREE.Color('#79a53c');
+  const dryC = new THREE.Color('#7a6a32'), dryTip = new THREE.Color('#b59b52');
+  const geos = [], ry = new THREE.Matrix4(), rz = new THREE.Matrix4();
+  for (let i = 0; i < count; i++) {
+    const old = rand() < 0.2;
+    const L = (3.8 + rand() * 1.4) * (height / 9);
+    const g = makeFrondGeometry(L, rand, old ? dryC : green, old ? dryTip : greenTip);
+    const pitch = old ? -0.9 - rand() * 0.4 : 0.1 + rand() * 0.6;
+    g.applyMatrix4(ry.makeRotationY(i / count * Math.PI * 2 + rand() * 0.3).multiply(rz.makeRotationZ(pitch)));
+    geos.push(g);
+  }
+  const frondMesh = new THREE.Mesh(mergeGeometries(geos), frondMat);
+  frondMesh.castShadow = true;
+  crown.add(frondMesh);
+  scene.add(palm);
+}
+
+// 椰林长在后滨：高潮线以上、靠近植被线的地方排成一条带。
+// 间距不固定：多数隔 5~12，偶尔两三棵挤在一起，偶尔空出一大段；
+// 前排靠海、朝海斜得厉害，后排稀疏、更直；镜头正前方留个口子看海。
+const PALMS = [];
+{
+  const rnd = mulberry32(20261020);
+  const add = (x, d, front) => PALMS.push({
+    x, z: shoreZ(x) + d,
+    height: (front ? 7.5 : 8.5) + rnd() * 5,
+    lean: front ? 0.16 + rnd() * 0.24 : 0.04 + rnd() * 0.1,
+    leanDir: [(rnd() - 0.5) * 0.9, -1],
+    seed: 1 + Math.floor(rnd() * 1e6),
+  });
+  for (let x = -165; x < 165;) {
+    const r = rnd();
+    x += r < 0.2 ? 1.6 + rnd() * 1.8 : r < 0.85 ? 5 + rnd() * 7 : 13 + rnd() * 9;
+    if (Math.abs(x) < 3.5) continue;
+    add(x, 18 + rnd() * 4.5 + (rnd() < 0.2 ? rnd() * 4 : 0), true);
+  }
+  for (let x = -165; x < 165;) {
+    x += 8 + rnd() * 16;
+    if (Math.abs(x) < 16) continue;      // 第二排只放两侧，免得挡住镜头
+    add(x, 27 + rnd() * 8, false);
+  }
+}
+PALMS.forEach(createPalm);
+const nearPalm = (x, z, r) => PALMS.some(p => (p.x - x) ** 2 + (p.z - z) ** 2 < r * r);
+
+// ---------- 礁石 ----------
+{
+  const rockMat = new THREE.MeshStandardMaterial({ color: '#6b665e', roughness: 0.9, flatShading: true });
+  const rr = mulberry32(42);
+  [[24, 1.5, 1.6], [27, 3.5, 1.0], [21.5, 4.5, 0.7], [-30, 6, 1.2]].forEach(([x, zOff, s]) => {
+    const g = new THREE.IcosahedronGeometry(1, 1);
+    const pa = g.attributes.position;
+    for (let i = 0; i < pa.count; i++) pa.setXYZ(i, pa.getX(i) * (0.8 + rr() * 0.4), pa.getY(i) * (0.55 + rr() * 0.3), pa.getZ(i) * (0.8 + rr() * 0.4));
+    g.computeVertexNormals();
+    const rock = new THREE.Mesh(g, rockMat);
+    const z = shoreZ(x) + zOff;
+    rock.position.set(x, sandMeshHeight(x, z) - 0.15 * s, z);
+    rock.scale.setScalar(s);
+    rock.rotation.y = rr() * 6;
+    rock.castShadow = rock.receiveShadow = true;
+    scene.add(rock);
+  });
+}
+
+// ---------- 沙滩小景：贝壳、海星、卵石、浮木、海草、蟹洞、沙草 ----------
+const propRand = mulberry32(2024);
+const pick = arr => arr[Math.floor(propRand() * arr.length)];
+// 在离水线 dMin~dMax、|x| 在 xMin~xMax 的范围内随机取点，避开椰树
+function beachSpot(dMin, dMax, xMax, xMin = 0) {
+  for (let tries = 0; tries < 40; tries++) {
+    const x = (propRand() < 0.5 ? -1 : 1) * (xMin + propRand() * (xMax - xMin));
+    const z = shoreZ(x) + dMin + propRand() * (dMax - dMin);
+    if (!nearPalm(x, z, 1.6)) return [x, z];
+  }
+  return [xMin, shoreZ(xMin) + dMin];
+}
+const dummy = new THREE.Object3D();
+function scatter(geo, mat, count, place, castShadow = false) {
+  const mesh = new THREE.InstancedMesh(geo, mat, count);
+  const c = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    dummy.position.set(0, 0, 0); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1);
+    place(dummy, c, i);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+    mesh.setColorAt(i, c);
+  }
+  mesh.receiveShadow = true;
+  mesh.castShadow = castShadow;
+  scene.add(mesh);
+  return mesh;
+}
+// 螺旋贝壳：扭转的圆锥，螺纹处鼓起并带条纹
+function spiralShellGeometry(r, h, turns, colA, colB) {
+  const g = new THREE.ConeGeometry(r, h, 16, 12);
+  const pa = g.attributes.position;
+  const cols = [], c = new THREE.Color();
+  for (let i = 0; i < pa.count; i++) {
+    const x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i);
+    const t = (y + h / 2) / h;
+    const w = Math.sin(t * Math.PI * 2 * turns + Math.atan2(z, x));
+    const s = 1 + 0.2 * w * (1 - t);
+    pa.setXYZ(i, x * s, y, z * s);
+    c.copy(colA).lerp(colB, smoothstep(-0.2, 0.6, w));
+    cols.push(c.r, c.g, c.b);
+  }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+// 椰林下：发了芽的椰子和小椰苗、掉落的枯叶、落地的椰子（只铺在镜头看得到的一段）
+{
+  const rnd = mulberry32(777);
+  const nearbyPalms = PALMS.filter(pl => Math.abs(pl.x) < 60);
+  const aroundPalm = (rMin, rMax) => {
+    const pl = nearbyPalms[Math.floor(rnd() * nearbyPalms.length)];
+    const a = rnd() * Math.PI * 2, r = rMin + rnd() * (rMax - rMin);
+    return [pl.x + Math.cos(a) * r, pl.z + Math.sin(a) * r * 0.8];
+  };
+  const geos = [], nutSpots = [];
+  const m = new THREE.Matrix4(), r1 = new THREE.Matrix4(), r2 = new THREE.Matrix4();
+  // 小椰苗：几片短叶从半埋的椰子里直直地冒出来，多在椰林前缘
+  const sprout = new THREE.Color('#4f8a2c'), sproutTip = new THREE.Color('#8fbf4a');
+  for (let i = 0; i < 16; i++) {
+    const [x, z] = aroundPalm(1.5, 6);
+    if (z - shoreZ(x) < 13) continue;
+    const y = sandMeshHeight(x, z);
+    const n = 3 + Math.floor(rnd() * 3), big = 0.6 + rnd() * 0.9;
+    for (let k = 0; k < n; k++) {
+      const g = makeFrondGeometry(big * (0.8 + rnd() * 0.5), rnd, sprout, sproutTip);
+      g.applyMatrix4(m.makeTranslation(x, y + 0.12, z).multiply(r1.makeRotationY(k / n * Math.PI * 2 + rnd())).multiply(r2.makeRotationZ(0.7 + rnd() * 0.5)));
+      geos.push(g);
+    }
+    nutSpots.push([x, z, 0.08]);
+  }
+  // 掉落的枯叶：平躺在树下，颜色发黄发褐
+  const dry = new THREE.Color('#7a6638'), dryTip = new THREE.Color('#c4aa6a');
+  for (let i = 0; i < 34; i++) {
+    const [x, z] = aroundPalm(0.8, 5);
+    const g = makeFrondGeometry(2.5 + rnd() * 2, rnd, dry, dryTip);
+    g.applyMatrix4(m.makeTranslation(x, sandMeshHeight(x, z) + 0.06, z).multiply(r1.makeRotationY(rnd() * Math.PI * 2)).multiply(r2.makeRotationZ(0.17 + rnd() * 0.08)));
+    geos.push(g);
+  }
+  const ground = new THREE.Mesh(mergeGeometries(geos), groundFrondMat);
+  ground.receiveShadow = true;
+  scene.add(ground);
+  // 落在树下的椰子，有青有黄有干褐
+  for (let i = 0; i < 40; i++) nutSpots.push([...aroundPalm(0.5, 3.5), 0]);
+  const nutCols = ['#5a4a22', '#6f7a2e', '#7d5c34', '#4a3a1c', '#8a7a3a'];
+  scatter(new THREE.SphereGeometry(1, 10, 8), new THREE.MeshStandardMaterial({ roughness: 0.7 }), nutSpots.length, (o, c, i) => {
+    const [x, z, sunk] = nutSpots[i];
+    o.position.set(x, sandMeshHeight(x, z) + 0.13 - sunk, z);
+    o.rotation.set(rnd() * 6, rnd() * 6, rnd() * 6);
+    o.scale.set(0.19, 0.16, 0.22);
+    c.set(nutCols[Math.floor(rnd() * nutCols.length)]);
+  }, true);
+}
+
+// 扇贝
+{
+  const g = new THREE.SphereGeometry(1, 20, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+  const pa = g.attributes.position;
+  for (let i = 0; i < pa.count; i++) {
+    const x = pa.getX(i), z = pa.getZ(i);
+    const r = 1 + 0.08 * Math.cos(Math.atan2(z, x) * 16);
+    pa.setX(i, x * r); pa.setZ(i, z * r);
+  }
+  g.computeVertexNormals();
+  const cols = ['#f4ede0', '#efd2c0', '#e8b48a', '#d98c6a', '#f6e7cf', '#c9a27c'];
+  scatter(g, new THREE.MeshStandardMaterial({ roughness: 0.5 }), 45, (o, c) => {
+    const [x, z] = beachSpot(3.5, 22, 45);
+    const s = 0.06 + propRand() * 0.06;
+    o.position.set(x, sandMeshHeight(x, z) - 0.005, z);
+    o.rotation.set((propRand() - 0.5) * 0.4, propRand() * 6.28, (propRand() - 0.5) * 0.4);
+    o.scale.set(s, s * 0.4, s * 0.9);
+    c.set(pick(cols));
+  });
+}
+// 螺壳
+{
+  const g = spiralShellGeometry(0.5, 1.4, 4, new THREE.Color(1, 1, 1), new THREE.Color(0.55, 0.5, 0.45));
+  const cols = ['#f2e6d0', '#e0b890', '#c78c5c', '#ead8c8', '#b9a48c'];
+  scatter(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45 }), 22, (o, c) => {
+    const [x, z] = beachSpot(4, 20, 40);
+    const s = 0.06 + propRand() * 0.05;
+    o.position.set(x, sandMeshHeight(x, z) + s * 0.4, z);
+    o.rotation.set(0, propRand() * 6.28, Math.PI / 2 + (propRand() - 0.5) * 0.3);
+    o.scale.setScalar(s);
+    c.set(pick(cols));
+  });
+}
+// 海星
+{
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 10; i++) {
+    const a = i / 10 * Math.PI * 2 + Math.PI / 2, r = i % 2 ? 0.4 : 1;
+    if (i) shape.lineTo(Math.cos(a) * r, Math.sin(a) * r); else shape.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  const g = new THREE.ExtrudeGeometry(shape, { depth: 0.05, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.14, bevelSegments: 2 });
+  g.rotateX(-Math.PI / 2);
+  const cols = ['#e2683a', '#d4472f', '#e89a3c', '#b5486a', '#d97a52'];
+  scatter(g, new THREE.MeshStandardMaterial({ roughness: 0.8 }), 9, (o, c) => {
+    const [x, z] = beachSpot(4.5, 12, 35);
+    const s = 0.1 + propRand() * 0.07;
+    o.position.set(x, sandMeshHeight(x, z) + 0.01, z);
+    o.rotation.set((propRand() - 0.5) * 0.2, propRand() * 6.28, (propRand() - 0.5) * 0.2);
+    o.scale.set(s, s * 0.5, s);
+    c.set(pick(cols));
+  });
+}
+// 卵石：靠近水边更多
+{
+  const cols = ['#8d8a84', '#a39a8c', '#6f6a64', '#c8c0b2', '#7d6c5a', '#e6e0d6'];
+  scatter(new THREE.IcosahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ roughness: 0.7, flatShading: true }), 140, (o, c) => {
+    const [x, z] = propRand() < 0.65 ? beachSpot(2.5, 9, 60) : beachSpot(9, 30, 60);
+    const s = 0.03 + propRand() * propRand() * 0.12;
+    o.position.set(x, sandMeshHeight(x, z) + s * 0.2, z);
+    o.rotation.set(propRand() * 6, propRand() * 6, propRand() * 6);
+    o.scale.set(s * (0.8 + propRand() * 0.6), s * (0.45 + propRand() * 0.3), s * (0.8 + propRand() * 0.5));
+    c.set(pick(cols));
+  });
+}
+// 蟹洞和洞口刨出来的小沙团
+{
+  const holes = [];
+  for (let i = 0; i < 22; i++) holes.push(beachSpot(6, 22, 35));
+  const hg = new THREE.CircleGeometry(1, 12);
+  hg.rotateX(-Math.PI / 2);
+  const holeMat = new THREE.MeshStandardMaterial({ color: '#3a2e1e', roughness: 1, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  scatter(hg, holeMat, holes.length, (o, c, i) => {
+    const [x, z] = holes[i];
+    const s = 0.04 + propRand() * 0.04;
+    o.position.set(x, sandMeshHeight(x, z) + 0.004, z);
+    o.rotation.y = propRand() * 6;
+    o.scale.set(s, 1, s * (0.8 + propRand() * 0.3));
+    c.set('#ffffff');
+  });
+  scatter(new THREE.SphereGeometry(1, 6, 4), new THREE.MeshStandardMaterial({ color: '#d9c08e', roughness: 1 }), holes.length * 6, (o, c, i) => {
+    const [hx, hz] = holes[Math.floor(i / 6)];
+    const a = propRand() * 6.28, r = 0.09 + propRand() * 0.12;
+    const x = hx + Math.cos(a) * r, z = hz + Math.sin(a) * r;
+    const s = 0.012 + propRand() * 0.01;
+    o.position.set(x, sandMeshHeight(x, z) + s * 0.3, z);
+    o.scale.setScalar(s);
+    c.setRGB(1, 1, 1);
+  });
+}
+// 浮木
+{
+  const woodMat = new THREE.MeshStandardMaterial({ color: '#9c8b74', roughness: 1 });
+  const makeWood = (x, d, len, r, yaw, branches) => {
+    const z = shoreZ(x) + d;
+    const g = new THREE.Group();
+    const lg = new THREE.CylinderGeometry(r * 0.7, r, len, 10, 8);
+    const pa = lg.attributes.position;
+    for (let i = 0; i < pa.count; i++) {
+      const y = pa.getY(i);
+      pa.setX(i, pa.getX(i) + Math.sin(y * 1.3) * r * 0.6);
+      pa.setZ(i, pa.getZ(i) + Math.sin(y * 0.8 + 1) * r * 0.4);
+    }
+    lg.computeVertexNormals();
+    const log = new THREE.Mesh(lg, woodMat);
+    log.rotation.z = Math.PI / 2;
+    log.castShadow = log.receiveShadow = true;
+    g.add(log);
+    for (const [t, dir, bl] of branches) {
+      const b = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.15, r * 0.4, bl, 6), woodMat);
+      const dv = new THREE.Vector3(...dir).normalize();
+      b.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dv);
+      b.position.set(t * len / 2, 0, 0).addScaledVector(dv, bl / 2);
+      b.castShadow = true;
+      g.add(b);
+    }
+    g.position.set(x, sandMeshHeight(x, z) + r * 0.45, z);
+    g.rotation.y = yaw;
+    scene.add(g);
+  };
+  makeWood(7, 13, 4.2, 0.2, 0.45, [[0.4, [0.3, 0.5, 0.8], 1.2], [-0.5, [-0.2, 0.3, -1], 0.8]]);
+  makeWood(-4, 9.5, 1.6, 0.08, -0.9, [[0.2, [0.4, 0.2, 0.9], 0.5]]);
+}
+// 高潮线上被冲上来的海草
+{
+  const mats = ['#2f3a1c', '#4a3f22', '#3b4a24', '#5a4a2a'].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.55 }));
+  for (let i = 0; i < 18; i++) {
+    const [x0, z0] = beachSpot(6.5, 10.5, 40);
+    const pts = [];
+    let x = x0, z = z0, a = propRand() * 6.28;
+    const n = 4 + Math.floor(propRand() * 4);
+    for (let k = 0; k < n; k++) {
+      pts.push(new THREE.Vector3(x, sandMeshHeight(x, z) + 0.02, z));
+      a += (propRand() - 0.5) * 1.6;
+      x += Math.cos(a) * 0.25; z += Math.sin(a) * 0.25;
+    }
+    const m = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), n * 4, 0.02 + propRand() * 0.015, 4), pick(mats));
+    m.receiveShadow = true;
+    scene.add(m);
+  }
+}
+// 沙丘上的沙草，随风轻摆
+{
+  const pos = [], col = [];
+  const base = new THREE.Color('#6b7436'), tip = new THREE.Color('#d6c487');
+  const rr = mulberry32(77), cA = new THREE.Color(), cB = new THREE.Color();
+  for (let b = 0; b < 11; b++) {
+    const a = rr() * Math.PI * 2, H = 0.5 + rr() * 0.8, lean = 0.15 + rr() * 0.5, w = 0.03;
+    const dir = new THREE.Vector3(Math.cos(a), 0, Math.sin(a)), side = new THREE.Vector3(-dir.z, 0, dir.x);
+    const off = dir.clone().multiplyScalar(rr() * 0.12);
+    let pL = null, pR = null, pt = 0;
+    for (let s = 0; s <= 4; s++) {
+      const t = s / 4;
+      const ctr = off.clone().addScaledVector(dir, lean * H * t * t).setY(H * t);
+      const ww = w * (1 - t * 0.9);
+      const L = ctr.clone().addScaledVector(side, ww), R = ctr.clone().addScaledVector(side, -ww);
+      if (pL) {
+        cA.copy(base).lerp(tip, pt); cB.copy(base).lerp(tip, t);
+        for (const [v, cc] of [[pL, cA], [pR, cA], [R, cB], [pL, cA], [R, cB], [L, cB]]) {
+          pos.push(v.x, v.y, v.z); col.push(cc.r, cc.g, cc.b);
+        }
+      }
+      pL = L; pR = R; pt = t;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.9 });
+  mat.onBeforeCompile = sh => {
+    sh.uniforms.uTime = U.uTime;
+    sh.uniforms.uWind = U.uWind;
+    sh.vertexShader = 'uniform float uTime, uWind;\n' + sh.vertexShader.replace('#include <begin_vertex>', /* glsl */`#include <begin_vertex>
+      vec2 gp = vec2(instanceMatrix[3].x, instanceMatrix[3].z);
+      float gs = (sin(uTime * 1.6 * uWind + gp.x * 0.35 + gp.y * 0.21) * 0.5 + sin(uTime * 2.7 + gp.x * 0.9) * 0.2) * uWind + 0.25 * (uWind - 1.0);
+      transformed.x += gs * 0.12 * position.y * position.y;
+      transformed.z += gs * 0.05 * position.y * position.y;`);
+  };
+  scatter(g, mat, 160, (o, c) => {
+    let x, z;
+    do { [x, z] = beachSpot(20, 75, 120, 4); } while (x * x + (z - 46) ** 2 < 100);
+    o.position.set(x, sandMeshHeight(x, z) - 0.03, z);
+    o.rotation.y = propRand() * 6.28;
+    o.scale.setScalar(0.8 + propRand() * 0.9);
+    c.setRGB(0.85 + propRand() * 0.3, 0.85 + propRand() * 0.3, 0.8 + propRand() * 0.2);
+  });
+}
+
+// ---------- 小螃蟹与寄居蟹 ----------
+const critterSphere = new THREE.SphereGeometry(1, 12, 8);
+const critterSeg = new THREE.CylinderGeometry(1, 1, 1, 5);
+critterSeg.translate(0, 0.5, 0);
+const eyeMat = new THREE.MeshStandardMaterial({ color: '#101010', roughness: 0.25 });
+const critters = [];
+
+function part(geo, mat, sx, sy, sz, x, y, z, parent) {
+  const m = new THREE.Mesh(geo, mat);
+  m.scale.set(sx, sy, sz);
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+// 两节的腿/螯，沿 +x 伸出；左侧用 scale.x = -1 的镜像组复用
+function makeLimb(mat, r, len1, len2, knee) {
+  const hip = new THREE.Group();
+  part(critterSeg, mat, r, len1, r, 0, 0, 0, hip).rotation.z = -Math.PI / 2;
+  const k = new THREE.Group();
+  k.position.x = len1;
+  k.rotation.z = -knee;
+  hip.add(k);
+  part(critterSeg, mat, r * 0.8, len2, r * 0.8, 0, 0, 0, k).rotation.z = -Math.PI / 2;
+  return hip;
+}
+const inCrabZone = (x, z) => { const d = z - shoreZ(x); return d > 4.5 && d < 27 && Math.abs(x) < 32 && !nearPalm(x, z, 0.9); };
+function animateLegs(legs, gait, blend, swing, lift) {
+  for (const L of legs) {
+    const ph = gait + L.i * Math.PI * 0.5 + (L.s > 0 ? 0 : Math.PI);
+    L.hip.rotation.y = L.spread + Math.cos(ph) * swing * blend;
+    L.hip.rotation.z = L.base + Math.max(0, Math.sin(ph)) * lift * blend;
+  }
+}
+
+// 小螃蟹：横着快速小跑，跑一阵停一阵，停下时偶尔举螯
+const CRAB_COLORS = ['#d8643c', '#e0a060', '#c4553a', '#e8c48c', '#b86a40', '#d9b27a'];
+function createCrab(x, z) {
+  const color = new THREE.Color(pick(CRAB_COLORS));
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5 });
+  const legMat = new THREE.MeshStandardMaterial({ color: color.clone().multiplyScalar(0.75), roughness: 0.6 });
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  root.add(body);
+  part(critterSphere, mat, 0.2, 0.065, 0.15, 0, 0, 0, body).castShadow = true;
+  const legs = [], claws = [];
+  for (const s of [-1, 1]) {
+    const side = new THREE.Group();
+    side.scale.x = s;
+    body.add(side);
+    part(critterSeg, legMat, 0.008, 0.07, 0.008, 0.05, 0.03, 0.12, side);
+    part(critterSphere, eyeMat, 0.018, 0.018, 0.018, 0.05, 0.1, 0.12, side);
+    const arm = new THREE.Group();
+    arm.position.set(0.12, 0, 0.1);
+    arm.rotation.set(0, -0.6, 0.1);
+    side.add(arm);
+    part(critterSeg, mat, 0.022, 0.1, 0.022, 0, 0, 0, arm).rotation.z = -Math.PI / 2;
+    const hand = new THREE.Group();
+    hand.position.x = 0.1;
+    hand.rotation.y = -0.9;
+    arm.add(hand);
+    part(critterSphere, mat, 0.07, 0.035, 0.045, 0.06, 0, 0, hand).castShadow = true;
+    const pincer = new THREE.Group();
+    pincer.position.set(0.1, 0.012, 0);
+    hand.add(pincer);
+    part(critterSphere, mat, 0.045, 0.013, 0.018, 0.035, 0, 0, pincer);
+    claws.push({ arm, pincer, s });
+    for (let i = 0; i < 4; i++) {
+      const hip = makeLimb(legMat, 0.011, 0.13, 0.15, 1.35);
+      const spread = -0.5 + i * 0.33;
+      hip.position.set(0.15, 0, 0.06 - i * 0.055);
+      hip.rotation.set(0, spread, 0.45);
+      side.add(hip);
+      legs.push({ hip, spread, base: 0.45, i, s });
+    }
+  }
+  const scale0 = 1.6 + propRand() * 0.7;
+  root.scale.setScalar(scale0);
+  scene.add(root);
+  const c = { kind: 'crab', mode: 'normal', sink: 0, modeT: 0, scale0,
+              root, body, legs, claws, x, z, heading: propRand() * 6.28, state: 'idle', timer: propRand() * 2,
+              dir: 1, speed: 1, gait: 0, blend: 0, wave: false, seed: propRand() * 10 };
+  c.update = (dt, t) => {
+    if (c.mode !== 'normal') { crabSpecial(c, dt, t); return; }
+    c.timer -= dt;
+    if (c.timer <= 0) {
+      if (c.state === 'walk') {
+        c.state = 'idle'; c.timer = 0.6 + Math.random() * 3; c.wave = Math.random() < 0.35;
+      } else {
+        if (Math.random() < 0.3) c.heading += (Math.random() - 0.5) * 2.2;
+        c.state = 'walk'; c.dir = Math.random() < 0.5 ? -1 : 1;
+        c.speed = 0.9 + Math.random() * 1.8; c.timer = 0.4 + Math.random() * 1.6;
+      }
+    }
+    if (c.state === 'walk') {
+      const step = c.dir * c.speed * dt;
+      const nx = c.x + Math.cos(c.heading) * step, nz = c.z - Math.sin(c.heading) * step;
+      if (inCrabZone(nx, nz)) { c.x = nx; c.z = nz; } else c.dir *= -1;
+      c.gait += dt * c.speed * 22;
+    }
+    c.blend += ((c.state === 'walk' ? 1 : 0) - c.blend) * Math.min(1, dt * 10);
+    animateLegs(c.legs, c.gait, c.blend, 0.22, 0.35);
+    const raise = c.state === 'idle' && c.wave ? 0.55 + 0.25 * Math.sin(t * 5 + c.seed) : 0.1;
+    for (const cl of c.claws) {
+      cl.arm.rotation.z += (raise - cl.arm.rotation.z) * Math.min(1, dt * 6);
+      cl.pincer.rotation.z = 0.15 + 0.2 * Math.sin(t * (c.wave ? 9 : 2) + c.seed + cl.s);
+    }
+    c.body.position.y = 0.068 + Math.abs(Math.sin(c.gait)) * 0.01 * c.blend;
+    c.root.position.set(c.x, sandMeshHeight(c.x, c.z), c.z);
+    c.root.rotation.y = c.heading;
+  };
+  critters.push(c);
+}
+
+// 螃蟹被海鸥盯上之后的状态：逃跑 → 缩在原地举螯 / 钻进沙里躲起来 → 过一阵再钻出来；被叼走时乱蹬腿
+const UP = new THREE.Vector3(0, 1, 0);
+function poseCrabClaws(c, raise, snap, t, dt) {
+  for (const cl of c.claws) {
+    cl.arm.rotation.z += (raise - cl.arm.rotation.z) * Math.min(1, dt * 8);
+    cl.pincer.rotation.z = 0.15 + 0.25 * Math.sin(t * snap + c.seed + cl.s);
+  }
+}
+function crabSpecial(c, dt, t) {
+  c.modeT -= dt;
+  switch (c.mode) {
+    case 'flee': {
+      const nx = c.x + c.fleeDir.x * c.fleeSpeed * dt, nz = c.z + c.fleeDir.z * c.fleeSpeed * dt;
+      if (inCrabZone(nx, nz)) { c.x = nx; c.z = nz; } else c.fleeDir.applyAxisAngle(UP, 1.3);
+      c.heading = Math.atan2(-c.fleeDir.z, c.fleeDir.x);   // 横着跑
+      c.gait += dt * c.fleeSpeed * 22;
+      animateLegs(c.legs, c.gait, 1, 0.25, 0.4);
+      poseCrabClaws(c, 0.5, 6, t, dt);
+      if (c.modeT <= 0) c.mode = c.next;
+      break;
+    }
+    case 'cower':
+      animateLegs(c.legs, c.gait, 0, 0, 0);
+      poseCrabClaws(c, 0.9, 12, t, dt);
+      break;
+    case 'burrow':
+      c.sink = Math.min(1, c.sink + dt * 1.1);
+      c.gait += dt * 30;
+      animateLegs(c.legs, c.gait, 0.6, 0.3, 0.3);
+      if (c.sink >= 1) { c.mode = 'hidden'; c.root.visible = false; c.modeT = 18 + Math.random() * 15; }
+      break;
+    case 'hidden':
+      if (c.modeT <= 0) { c.mode = 'emerge'; c.root.visible = true; }
+      break;
+    case 'emerge':
+      c.sink = Math.max(0, c.sink - dt * 0.7);
+      if (c.sink <= 0) { c.mode = 'normal'; c.state = 'idle'; c.timer = 1 + Math.random() * 2; }
+      break;
+    case 'caught':
+      c.gait += dt * 40;
+      animateLegs(c.legs, c.gait, 1, 0.4, 0.6);
+      poseCrabClaws(c, 0.6, 14, t, dt);
+      return;
+  }
+  c.blend = 0;
+  c.body.position.y = 0.068;
+  c.root.position.set(c.x, sandMeshHeight(c.x, c.z) - c.sink * 0.45, c.z);
+  c.root.rotation.y = c.heading;
+}
+
+// 寄居蟹：背着螺壳慢慢爬，时不时缩进壳里躲一会儿
+const SHELL_COLS = [['#efe2c8', '#b98a5a'], ['#f2d7c4', '#c0705a'], ['#e8e0d0', '#7c6a58'], ['#f0c8a0', '#a0522d'], ['#dcd6c8', '#5d6f7a']];
+const HERMIT_COLS = ['#c8553a', '#d07a4a', '#a8506e', '#c66a5a'];
+const hermitShellMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45 });
+function createHermit(x, z) {
+  const [ca, cb] = pick(SHELL_COLS);
+  const flesh = new THREE.MeshStandardMaterial({ color: pick(HERMIT_COLS), roughness: 0.55 });
+  const root = new THREE.Group();
+  const shellG = new THREE.Group();
+  shellG.position.set(0, 0.16, -0.04);
+  root.add(shellG);
+  const shell = new THREE.Mesh(spiralShellGeometry(0.12, 0.3, 3.5, new THREE.Color(ca), new THREE.Color(cb)), hermitShellMat);
+  shell.rotation.x = -1.1;
+  shell.castShadow = true;
+  shellG.add(shell);
+  const soft = new THREE.Group();   // 会缩回壳里的部分
+  soft.position.set(0, 0.07, 0.1);
+  root.add(soft);
+  part(critterSphere, flesh, 0.05, 0.04, 0.05, 0, 0.01, 0, soft);
+  const legs = [];
+  for (const s of [-1, 1]) {
+    const side = new THREE.Group();
+    side.scale.x = s;
+    soft.add(side);
+    part(critterSeg, flesh, 0.007, 0.06, 0.007, 0.022, 0.03, 0.03, side);
+    part(critterSphere, eyeMat, 0.014, 0.014, 0.014, 0.022, 0.09, 0.03, side);
+    const big = s > 0 ? 1 : 0.65;   // 一只大螯一只小螯
+    const arm = new THREE.Group();
+    arm.position.set(0.035, -0.005, 0.04);
+    arm.rotation.y = -1.1;
+    side.add(arm);
+    part(critterSphere, flesh, 0.06 * big, 0.03 * big, 0.035 * big, 0.04 * big, 0, 0, arm).castShadow = true;
+    for (let i = 0; i < 2; i++) {
+      const hip = makeLimb(flesh, 0.009, 0.09, 0.13, 1.2);
+      const spread = -0.7 + i * 0.5;
+      hip.position.set(0.04, 0, -i * 0.035);
+      hip.rotation.set(0, spread, 0.4);
+      side.add(hip);
+      legs.push({ hip, spread, base: 0.4, i, s });
+    }
+  }
+  root.scale.setScalar(1.5 + propRand() * 0.6);
+  scene.add(root);
+  const c = { root, shellG, soft, legs, x, z, homeX: x, homeZ: z, heading: propRand() * 6.28, state: 'idle',
+              timer: propRand() * 3, speed: 0.3, turn: 0, gait: 0, blend: 0, out: 1 };
+  c.update = dt => {
+    c.timer -= dt;
+    if (c.timer <= 0) {
+      if (c.state === 'hide') { c.state = 'idle'; c.timer = 1 + Math.random() * 2; }
+      else if (c.state === 'walk') {
+        if (Math.random() < 0.2) { c.state = 'hide'; c.timer = 3 + Math.random() * 5; }
+        else { c.state = 'idle'; c.timer = 1 + Math.random() * 3; }
+      } else {
+        c.state = 'walk'; c.timer = 2 + Math.random() * 5;
+        c.turn = (Math.random() - 0.5) * 1.2; c.speed = 0.22 + Math.random() * 0.3;
+      }
+    }
+    const hiding = c.state === 'hide';
+    c.out += ((hiding ? 0 : 1) - c.out) * Math.min(1, dt * (hiding ? 9 : 1.5));
+    c.blend += ((c.state === 'walk' && c.out > 0.95 ? 1 : 0) - c.blend) * Math.min(1, dt * 6);
+    if (c.blend > 0.01) {
+      c.heading += c.turn * dt;
+      const step = c.speed * dt * c.blend;
+      const nx = c.x + Math.sin(c.heading) * step, nz = c.z + Math.cos(c.heading) * step;
+      if (inCrabZone(nx, nz)) { c.x = nx; c.z = nz; }
+      else c.heading = Math.atan2(c.homeX - c.x, c.homeZ - c.z);
+      c.gait += dt * c.speed * 30 * c.blend;
+    }
+    animateLegs(c.legs, c.gait, c.blend, 0.35, 0.3);
+    c.soft.scale.setScalar(Math.max(0.001, c.out));
+    c.soft.position.z = 0.04 + 0.06 * c.out;
+    c.shellG.rotation.x = (1 - c.out) * 0.2;
+    c.shellG.rotation.z = Math.sin(c.gait * 0.5) * 0.07 * c.blend;
+    c.root.position.set(c.x, sandMeshHeight(c.x, c.z), c.z);
+    c.root.rotation.y = c.heading;
+  };
+  critters.push(c);
+}
+
+for (let i = 0; i < 8; i++) createCrab(...beachSpot(5, 25, 26));
+for (let i = 0; i < 6; i++) createHermit(...beachSpot(6, 24, 22));
+
+// ---------- 海鸥：随机出现的鸟群，几秒内从画面一侧飞到另一侧 ----------
+const birdMat = new THREE.MeshStandardMaterial({ color: '#f0f0f0', roughness: 0.8, side: THREE.DoubleSide });
+const wingGeo = new THREE.BufferGeometry();
+wingGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+  0, 0, 0.18,   0, 0, -0.15,   0.55, 0.08, 0.12,
+  0.55, 0.08, 0.12,   0, 0, -0.15,   1.25, -0.05, -0.25,
+], 3));
+wingGeo.computeVertexNormals();
+const birdBodyGeo = new THREE.SphereGeometry(1, 8, 6);
+
+function makeBird() {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(birdBodyGeo, birdMat);
+  body.scale.set(0.12, 0.1, 0.42);
+  const wl = new THREE.Group(); wl.add(new THREE.Mesh(wingGeo, birdMat));
+  const mirror = new THREE.Group(); mirror.scale.x = -1;
+  const wr = new THREE.Group(); wr.add(new THREE.Mesh(wingGeo, birdMat)); mirror.add(wr);
+  group.add(body, wl, mirror);
+  return { group, wl, wr };
+}
+
+// 队形：返回机翼展开方向(x)、高度(y)、向后(z)的偏移
+const FORMATIONS = {
+  v:       (i, n) => { const j = i - (n - 1) / 2; return [j * 2.2, (Math.random() - 0.5) * 0.6, -Math.abs(j) * 2.0]; },
+  line:    (i)    => [(Math.random() - 0.5) * 1.5, (Math.random() - 0.5) * 1.0, -i * 2.6],
+  scatter: ()     => [(Math.random() - 0.5) * 9, (Math.random() - 0.5) * 3.5, (Math.random() - 0.5) * 8],
+};
+
+const flocks = [];
+let nextFlockIn = 2;
+
+function spawnFlock() {
+  const D = 32 + Math.random() * 100;                       // 离镜头的距离
+  const halfW = D * 0.95 + 15;                              // 刚好在画面外出生/消失
+  const dirX = Math.random() < 0.5 ? 1 : -1;
+  const drift = (Math.random() - 0.5) * 0.5;                // 略微斜穿
+  const dir = new THREE.Vector3(dirX, 0, drift).normalize();
+  const mid = new THREE.Vector3((Math.random() - 0.5) * 0.3 * D, 4 + 0.05 * D + Math.random() * (1.6 + 0.27 * D), 34 - D);
+  const len = 2 * halfW / Math.abs(dir.x);
+  const speed = 13 + Math.random() * 9;
+  const n = Math.random() < 0.25 ? 1 : 2 + Math.floor(Math.random() * 6);
+  const kinds = Object.keys(FORMATIONS);
+  const form = FORMATIONS[n === 1 ? 'line' : kinds[Math.floor(Math.random() * kinds.length)]];
+
+  const group = new THREE.Group();
+  group.rotation.order = 'YXZ';
+  const birds = [];
+  const scale = 1.1 + Math.random() * 0.5;
+  for (let i = 0; i < n; i++) {
+    const b = makeBird();
+    b.offset = new THREE.Vector3(...form(i, n));
+    b.phase = Math.random() * Math.PI * 2;
+    b.flapSpeed = 7 + Math.random() * 3;
+    b.group.scale.setScalar(scale * (0.9 + Math.random() * 0.2));
+    group.add(b.group);
+    birds.push(b);
+  }
+  scene.add(group);
+  flocks.push({
+    group, birds, dir, speed,
+    start: mid.clone().addScaledVector(dir, -len / 2),
+    side: new THREE.Vector3(-dir.z, 0, dir.x),
+    duration: len / speed, t: 0,
+    swayA: 2 + Math.random() * 4, swayW: 0.3 + Math.random() * 0.4, swayP: Math.random() * 6.28,
+    bobA: 0.5 + Math.random() * 1.5, bobW: 0.4 + Math.random() * 0.5,
+  });
+}
+
+const birdVel = new THREE.Vector3();
+function updateBirds(dt, e, rate) {
+  // 白天才有鸟，清晨和傍晚更频繁；按播放速度换算，保证每“小时”出现的频率大致一致
+  nextFlockIn -= dt * rate;
+  if (nextFlockIn <= 0) {
+    if (e > 0.03 && W.rain < 0.5 && flocks.length < 3) spawnFlock();   // 大雨天鸟不出来
+    nextFlockIn = (5 + Math.random() * 11) * (e < 0.25 ? 0.6 : 1);
+  }
+
+  for (let k = flocks.length - 1; k >= 0; k--) {
+    const f = flocks[k];
+    f.t += dt;
+    const t = f.t;
+    if (t > f.duration) {
+      scene.remove(f.group);
+      flocks.splice(k, 1);
+      continue;
+    }
+    // 沿直线前进，叠加左右摆动和上下起伏
+    const sw = f.swayW * t + f.swayP, bw = f.bobW * t;
+    f.group.position.copy(f.start).addScaledVector(f.dir, f.speed * t)
+      .addScaledVector(f.side, f.swayA * Math.sin(sw));
+    f.group.position.y += f.bobA * Math.sin(bw);
+    birdVel.copy(f.dir).multiplyScalar(f.speed).addScaledVector(f.side, f.swayA * f.swayW * Math.cos(sw));
+    f.group.rotation.y = Math.atan2(birdVel.x, birdVel.z);
+    f.group.rotation.z = THREE.MathUtils.clamp(f.swayA * f.swayW * f.swayW * Math.sin(sw) / f.speed * 8, -0.5, 0.5);
+
+    for (const b of f.birds) {
+      b.group.position.set(
+        b.offset.x + Math.sin(t * 0.9 + b.phase) * 0.4,
+        b.offset.y + Math.sin(t * 1.3 + b.phase) * 0.3,
+        b.offset.z + Math.sin(t * 0.7 + b.phase) * 0.5);
+      // 间歇滑翔：一段时间扇翅，一段时间翅膀微抬滑行
+      const glide = smoothstep(0.3, 0.7, Math.sin(t * 0.8 + b.phase));
+      const flap = Math.sin(t * b.flapSpeed + b.phase) * 0.6 * (1 - glide) + 0.12 * glide;
+      b.wl.rotation.z = flap;
+      b.wr.rotation.z = flap;
+    }
+  }
+}
+
+// ---------- 海鸥捕蟹：偶尔有一只海鸥俯冲落到沙滩上，追着螃蟹啄 ----------
+const GULL_SCALE = 1.8;
+const gullWhiteMat = new THREE.MeshStandardMaterial({ color: '#f5f5f2', roughness: 0.7 });
+const gullWingMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, side: THREE.DoubleSide });
+const gullBeakMat = new THREE.MeshStandardMaterial({ color: '#f2c230', roughness: 0.5 });
+const gullLegMat = new THREE.MeshStandardMaterial({ color: '#e59a5c', roughness: 0.6 });
+function coloredTris(points, tris) {
+  const pos = [], col = [];
+  for (const tri of tris) for (const [k, hex] of tri) {
+    const c = new THREE.Color(hex);
+    pos.push(...points[k]); col.push(c.r, c.g, c.b);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+// 翅膀：内侧浅灰，翼尖黑色
+const gullWingGeo = coloredTris(
+  { rf: [0, 0, 0.16], rb: [0, 0, -0.14], ef: [0.55, 0.04, 0.12], eb: [0.55, 0.04, -0.2], tip: [1.2, -0.02, -0.32] },
+  [[['rf', '#b9bfc7'], ['rb', '#b9bfc7'], ['eb', '#b9bfc7']],
+   [['rf', '#b9bfc7'], ['eb', '#b9bfc7'], ['ef', '#b9bfc7']],
+   [['ef', '#8e959e'], ['eb', '#8e959e'], ['tip', '#161616']]]);
+const gullTailGeo = coloredTris(
+  { l: [-0.11, 0.02, -0.3], r: [0.11, 0.02, -0.3], t: [0, 0.04, -0.62] },
+  [[['l', '#e8eaec'], ['r', '#e8eaec'], ['t', '#9aa0a8']]]);
+const gullBeakGeo = new THREE.ConeGeometry(0.028, 0.15, 6);
+gullBeakGeo.rotateX(Math.PI / 2);
+
+function makeGull() {
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  body.position.y = 0.32;
+  root.add(body);
+  part(critterSphere, gullWhiteMat, 0.16, 0.15, 0.42, 0, 0, 0, body).castShadow = true;
+  body.add(new THREE.Mesh(gullTailGeo, gullWingMat));
+  const neck = new THREE.Group();
+  neck.position.set(0, 0.08, 0.3);
+  body.add(neck);
+  part(critterSphere, gullWhiteMat, 0.1, 0.1, 0.12, 0, 0.08, 0.06, neck).castShadow = true;
+  const beak = new THREE.Mesh(gullBeakGeo, gullBeakMat);
+  beak.position.set(0, 0.06, 0.22);
+  neck.add(beak);
+  for (const s of [-1, 1]) part(critterSphere, eyeMat, 0.014, 0.014, 0.014, s * 0.065, 0.11, 0.12, neck);
+  const beakAnchor = new THREE.Object3D();
+  beakAnchor.position.set(0, 0.04, 0.28);
+  neck.add(beakAnchor);
+  const wings = [], legs = [];
+  for (const s of [-1, 1]) {
+    const side = new THREE.Group();
+    side.scale.x = s;
+    side.position.set(0, 0.07, 0.05);
+    body.add(side);
+    const pivot = new THREE.Group();
+    pivot.position.x = 0.1;
+    side.add(pivot);
+    const w = new THREE.Mesh(gullWingGeo, gullWingMat);
+    w.castShadow = true;
+    pivot.add(w);
+    wings.push(pivot);
+    const hip = new THREE.Group();
+    hip.position.set(s * 0.06, -0.1, 0);
+    body.add(hip);
+    part(critterSeg, gullLegMat, 0.016, 0.24, 0.016, 0, 0, 0, hip).rotation.x = Math.PI;
+    part(critterSphere, gullLegMat, 0.045, 0.01, 0.065, 0, -0.24, 0.03, hip);
+    legs.push(hip);
+  }
+  root.scale.setScalar(GULL_SCALE);
+  scene.add(root);
+  return { root, body, neck, wings, legs, beakAnchor, walk: 0 };
+}
+
+let gullEvent = null;
+let nextGullIn = 15 + Math.random() * 10;
+const gTmp = new THREE.Vector3();
+const camFrustum = new THREE.Frustum(), camProj = new THREE.Matrix4();
+const lerpAngle = (a, b, k) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
+function bezier(out, a, b, c, d, u) {
+  const v = 1 - u;
+  return out.set(0, 0, 0).addScaledVector(a, v * v * v).addScaledVector(b, 3 * v * v * u)
+    .addScaledVector(c, 3 * v * u * u).addScaledVector(d, u * u * u);
+}
+// 只挑镜头里看得见的螃蟹下手
+function pickVisibleCrab() {
+  camProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  camFrustum.setFromProjectionMatrix(camProj);
+  const list = critters.filter(c => c.kind === 'crab' && c.mode === 'normal'
+    && camFrustum.containsPoint(c.root.position) && c.root.position.distanceTo(camera.position) < 50);
+  return list.length ? list[Math.floor(Math.random() * list.length)] : null;
+}
+function startGullAttack(crab) {
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const C = new THREE.Vector3(crab.x, sandMeshHeight(crab.x, crab.z), crab.z);
+  const S = C.clone().add(new THREE.Vector3(side * 38, 18, -32));        // 从海面上空、画面一侧飞来
+  const aDir = new THREE.Vector3(C.x - S.x, 0, C.z - S.z).normalize();
+  const L = C.clone().addScaledVector(aDir, -1.8);                       // 落在螃蟹前面一点
+  L.y = sandMeshHeight(L.x, L.z);
+  gullEvent = {
+    g: makeGull(), crab, catchIt: Math.random() < 0.6, phase: 'approach', t: 0, T: 4.6,
+    A: S, B: S.clone().addScaledVector(aDir, 14).setY(S.y - 3), C: L.clone().addScaledVector(aDir, -7).setY(L.y + 3), D: L,
+    pos: S.clone(), heading: Math.atan2(aDir.x, aDir.z), pitch: 0, alerted: false, caught: false,
+  };
+}
+function alertCrab(ev) {
+  ev.alerted = true;
+  const c = ev.crab;
+  if (c.mode !== 'normal') return;
+  c.mode = 'flee';
+  c.fleeDir = new THREE.Vector3(c.x - ev.D.x, 0, c.z - ev.D.z).normalize().applyAxisAngle(UP, (Math.random() - 0.5) * 1.0);
+  c.fleeSpeed = 2.6 + Math.random();
+  c.modeT = ev.catchIt ? 0.9 : 1.1;
+  c.next = ev.catchIt ? 'cower' : 'burrow';
+}
+function grabCrab(ev) {
+  const c = ev.crab;
+  ev.caught = true;
+  c.mode = 'caught';
+  c.root.visible = true;
+  ev.g.beakAnchor.add(c.root);
+  c.root.position.set(0, -0.1, 0.06);
+  c.root.rotation.set(0.4, Math.random() * 6.28, 0.5);
+  c.root.scale.setScalar(c.scale0 / GULL_SCALE);
+  c.body.position.y = 0;
+}
+function beginTakeoff(ev) {
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const out = new THREE.Vector3(side, 0, -0.35).normalize();             // 侧向飞出画面
+  const fwd = new THREE.Vector3(Math.sin(ev.heading), 0, Math.cos(ev.heading));
+  const p = ev.pos;
+  ev.A = p.clone();
+  ev.B = p.clone().addScaledVector(fwd, 2).setY(p.y + 3);
+  ev.C = p.clone().addScaledVector(out, 22).setY(p.y + 10);
+  ev.D = p.clone().addScaledVector(out, 70).setY(p.y + 28);
+  ev.phase = 'takeoff'; ev.t = 0; ev.T = 5;
+}
+function endGullEvent() {
+  const ev = gullEvent, c = ev.crab;
+  if (ev.caught) {
+    // 被叼走的螃蟹：过一阵从沙滩别处的沙里钻出来，保持数量
+    ev.g.beakAnchor.remove(c.root);
+    scene.add(c.root);
+    c.root.rotation.set(0, 0, 0);
+    c.root.scale.setScalar(c.scale0);
+    [c.x, c.z] = beachSpot(5, 25, 26);
+    c.mode = 'hidden'; c.sink = 1; c.root.visible = false; c.modeT = 20 + Math.random() * 15;
+  }
+  scene.remove(ev.g.root);
+  gullEvent = null;
+}
+
+function updateGull(dt, e, rate) {
+  if (!gullEvent) {
+    nextGullIn -= dt * rate;
+    if (nextGullIn <= 0) {
+      nextGullIn = 35 + Math.random() * 40;
+      const crab = e > 0.05 && W.rain < 0.3 ? pickVisibleCrab() : null;
+      if (crab) startGullAttack(crab);
+    }
+    return;
+  }
+  const ev = gullEvent, g = ev.g, cr = ev.crab;
+  ev.t += dt;
+  let flap = 0, fold = 1, pitch = 0, neckX = 0, legsOut = 1, walkSwing = 0;
+
+  if (ev.phase === 'approach' || ev.phase === 'takeoff') {
+    const u = Math.min(1, ev.t / ev.T);
+    const uu = ev.phase === 'approach' ? 1 - Math.pow(1 - u, 1.5) : Math.pow(u, 1.3);
+    bezier(ev.pos, ev.A, ev.B, ev.C, ev.D, uu);
+    bezier(gTmp, ev.A, ev.B, ev.C, ev.D, Math.min(1, uu + 0.01)).sub(ev.pos);
+    if (gTmp.lengthSq() > 1e-8) {
+      ev.heading = lerpAngle(ev.heading, Math.atan2(gTmp.x, gTmp.z), Math.min(1, dt * 6));
+      ev.pitch = Math.atan2(-gTmp.y, Math.hypot(gTmp.x, gTmp.z));
+    }
+    if (ev.phase === 'approach') {
+      // 先扇几下，然后滑翔下降，落地前抬头、猛扇翅膀减速、放下腿
+      const flare = smoothstep(0.8, 1.0, u);
+      fold = 0;
+      pitch = THREE.MathUtils.lerp(ev.pitch * 0.7, -0.7, flare);
+      flap = flare > 0 ? Math.sin(ev.t * 15) * 0.85 + 0.1
+           : u < 0.22 ? Math.sin(ev.t * 9) * 0.6 + 0.1 : 0.1 + Math.sin(ev.t * 2) * 0.06;
+      legsOut = flare;
+      if (!ev.alerted && u > 0.7) alertCrab(ev);
+      if (u >= 1) { ev.phase = 'land'; ev.t = 0; }
+    } else {
+      fold = 1 - smoothstep(0, 0.08, u);
+      pitch = THREE.MathUtils.lerp(-0.5, ev.pitch * 0.6, smoothstep(0, 0.3, u));
+      flap = Math.sin(ev.t * 11) * 0.75 + 0.1;
+      legsOut = 1 - smoothstep(0.08, 0.3, u);
+      if (u >= 1) { endGullEvent(); return; }
+    }
+  } else if (ev.phase === 'land') {
+    const k = Math.min(1, ev.t / 0.5);
+    pitch = THREE.MathUtils.lerp(-0.7, 0, k);
+    fold = k;
+    flap = Math.sin(ev.t * 15) * 0.6 * (1 - k);
+    if (k >= 1) { ev.phase = 'chase'; ev.t = 0; }
+  } else if (ev.phase === 'chase') {
+    // 收起翅膀快步追上去
+    gTmp.set(cr.x - ev.pos.x, 0, cr.z - ev.pos.z);
+    const dist = gTmp.length();
+    ev.heading = lerpAngle(ev.heading, Math.atan2(gTmp.x, gTmp.z), Math.min(1, dt * 8));
+    const reach = 0.5 * GULL_SCALE + 0.15;   // 低头就能啄到的距离
+    if (dist > reach + 0.05 && ev.t < 6) {
+      ev.pos.addScaledVector(gTmp.normalize(), Math.min(dist - reach, 2.8 * dt));
+      g.walk += dt * 16;
+      walkSwing = Math.sin(g.walk) * 0.5;
+    } else { ev.phase = 'peck'; ev.t = 0; }
+  } else if (ev.phase === 'peck') {
+    const per = 0.38, n = Math.floor(ev.t / per), k = (ev.t % per) / per;
+    const dip = Math.sin(k * Math.PI);
+    neckX = dip * 1.2;
+    pitch = dip * 0.35;
+    if (ev.catchIt && !ev.caught && n >= 1 && k > 0.5 && cr.root.visible) grabCrab(ev);
+    if (n >= (ev.caught ? 2 : 4)) { ev.phase = ev.caught ? 'hold' : 'look'; ev.t = 0; }
+  } else if (ev.phase === 'hold' || ev.phase === 'look') {
+    // 叼住了就抬头；扑空了就左右张望一下
+    neckX = ev.phase === 'hold' ? -0.35 : 0;
+    g.neck.rotation.y = ev.phase === 'look' ? Math.sin(ev.t * 5) * 0.6 : 0;
+    if (ev.t > 0.8) { g.neck.rotation.y = 0; beginTakeoff(ev); }
+  }
+  if (ev.phase !== 'approach' && ev.phase !== 'takeoff') ev.pos.y = sandMeshHeight(ev.pos.x, ev.pos.z);
+
+  g.root.position.copy(ev.pos);
+  g.root.rotation.y = ev.heading;
+  g.body.rotation.x = pitch;
+  g.body.position.y = 0.32 + Math.abs(walkSwing) * 0.05;
+  g.neck.rotation.x = neckX;
+  for (const w of g.wings) w.rotation.set(0, fold * 1.45, flap * (1 - fold) - fold * 0.1);
+  g.legs.forEach((leg, i) => { leg.rotation.x = (1 - legsOut) * 1.4 + (i ? -walkSwing : walkSwing); });
+}
+// 按 G 立刻叫一只海鸥来（方便观看）
+window.addEventListener('keydown', ev => {
+  if (ev.code === 'KeyG' && !gullEvent) { const c = pickVisibleCrab(); if (c) startGullAttack(c); }
+});
+
+// ---------- 灯光 ----------
+const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+Object.assign(sunLight.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, near: 1, far: 400 });
+sunLight.shadow.camera.updateProjectionMatrix();
+sunLight.shadow.bias = -0.0004;
+sunLight.shadow.normalBias = 0.03;
+sunLight.target.position.set(0, 0, 12);
+const moonLight = new THREE.DirectionalLight(0x9fb6ff, 0);
+moonLight.target = sunLight.target;
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.5);
+scene.add(sunLight, sunLight.target, moonLight, hemi);
+
+// ---------- 昼夜调色板（按太阳高度插值） ----------
+const KEYS = [
+  { e: -0.50, zen: '#040a1c', hor: '#0c1830', sun: '#ff6a2a', glow: 0.0 },
+  { e: -0.18, zen: '#0a1638', hor: '#2a2a50', sun: '#ff5a2a', glow: 0.25 },
+  { e: -0.06, zen: '#1b2d63', hor: '#b8607a', sun: '#ff5a24', glow: 0.9 },
+  { e:  0.02, zen: '#2f5492', hor: '#ff8c55', sun: '#ff6a26', glow: 1.3 },
+  { e:  0.10, zen: '#3f78c4', hor: '#ffc48e', sun: '#ffae62', glow: 0.7 },
+  { e:  0.28, zen: '#2f70d2', hor: '#a8ccee', sun: '#fff0d8', glow: 0.18 },
+  { e:  0.70, zen: '#1d5cc6', hor: '#b6d6f4', sun: '#fffaf2', glow: 0.1 },
+].map(k => ({ e: k.e, zen: new THREE.Color(k.zen), hor: new THREE.Color(k.hor), sun: new THREE.Color(k.sun), glow: k.glow }));
+
+const pal = { zen: new THREE.Color(), hor: new THREE.Color(), sun: new THREE.Color(), glow: 0 };
+function samplePalette(e) {
+  let i = 0;
+  while (i < KEYS.length - 2 && e > KEYS[i + 1].e) i++;
+  const a = KEYS[i], b = KEYS[i + 1];
+  const s = smoothstep(a.e, b.e, e);
+  pal.zen.lerpColors(a.zen, b.zen, s);
+  pal.hor.lerpColors(a.hor, b.hor, s);
+  pal.sun.lerpColors(a.sun, b.sun, s);
+  pal.glow = a.glow + (b.glow - a.glow) * s;
+}
+
+const DEEP = new THREE.Color('#0a3550'), SHALLOW = new THREE.Color('#3fb5a5'), SAND_GROUND = new THREE.Color('#8a7656');
+const WHITE = new THREE.Color(1, 1, 1);
+const tint = new THREE.Color(), tmp = new THREE.Color();
+
+// 一个循环：前 82% 是白天（日出前→日落后），剩余为夜晚（太阳从地下绕回）
+const A = 0.18, DAYF = 0.82, CYCLE = 90;
+const thetaAt = p => p < DAYF
+  ? -A + (Math.PI + 2 * A) * (p / DAYF)
+  : Math.PI + A + (Math.PI - 2 * A) * ((p - DAYF) / (1 - DAYF));
+const pAtTheta = th => DAYF * (th + A) / (Math.PI + 2 * A);
+
+const sunDir = new THREE.Vector3(), moonDir = new THREE.Vector3();
+
+function updateDayCycle(p) {
+  const th = thetaAt(p);
+  sunDir.set(-Math.cos(th) * 0.8, Math.sin(th) * 0.95, -1).normalize();
+  moonDir.set(Math.cos(th) * 0.7, -Math.sin(th) * 0.9, -1).normalize();
+  const e = sunDir.y;
+  samplePalette(e);
+
+  const day = smoothstep(-0.1, 0.35, e);
+  const night = smoothstep(0.02, -0.22, e);
+  const sunI = smoothstep(-0.04, 0.10, e);
+  const light = 0.035 + 0.965 * smoothstep(-0.12, 0.4, e);
+
+  U.uSunDir.value.copy(sunDir);
+  U.uMoonDir.value.copy(moonDir);
+  U.uZenith.value.copy(pal.zen);
+  U.uHorizon.value.copy(pal.hor);
+  U.uSunColor.value.copy(pal.sun);
+  U.uGlow.value = pal.glow;
+  U.uNight.value = night;
+  U.uSunVis.value = smoothstep(-0.08, -0.02, e);
+  U.uCloudLight.value = smoothstep(-0.16, 0.06, e);
+  U.uSunI.value = sunI;
+  U.uMoonI.value = night;
+
+  tint.copy(WHITE).lerp(pal.sun, 0.4 * (1 - day));
+  U.uDeep.value.copy(DEEP).multiplyScalar(light).multiply(tint);
+  U.uShallow.value.copy(SHALLOW).multiplyScalar(light).multiply(tint);
+  tmp.copy(pal.zen).lerp(pal.hor, 0.5);
+  U.uFoamCol.value.copy(tmp).multiplyScalar(0.9).add(tint.copy(pal.sun).multiplyScalar(sunI * 0.9))
+    .add(tmp.setRGB(0.05, 0.06, 0.09).multiplyScalar(night));
+
+  sunLight.color.copy(pal.sun);
+  sunLight.intensity = 3.0 * smoothstep(-0.02, 0.18, e);
+  sunLight.position.copy(sunLight.target.position).addScaledVector(sunDir, 150);
+  moonLight.intensity = 0.8 * night;
+  moonLight.position.copy(sunLight.target.position).addScaledVector(moonDir, 150);
+  hemi.color.copy(pal.zen).lerp(pal.hor, 0.4);
+  hemi.groundColor.copy(SAND_GROUND).multiplyScalar(light);
+  hemi.intensity = 0.3 + 0.85 * day + 0.5 * night;   // 夜里稍亮一点，沙滩上的海龟才看得清
+
+  scene.fog.color.copy(pal.hor);
+  renderer.toneMappingExposure = 0.85 + 0.6 * night;
+
+  return { th, e };
+}
+
+// ---------- 天气 ----------
+// cover 云量（null = 多云时随时间自然变化）、ov 阴天程度、storm 风暴暗度、rain 雨量、wind 风力、sea 浪高倍数、fog 雾、bolt 是否打雷
+const WEATHER = {
+  clear:    { cover: 0.12, ov: 0,    storm: 0,    rain: 0,    wind: 0.8, sea: 0.9,  fog: 0,    bolt: 0 },
+  cloudy:   { cover: null, ov: 0,    storm: 0,    rain: 0,    wind: 1.0, sea: 1.0,  fog: 0,    bolt: 0 },
+  overcast: { cover: 1,    ov: 0.85, storm: 0.15, rain: 0,    wind: 1.2, sea: 1.1,  fog: 0.3,  bolt: 0 },
+  drizzle:  { cover: 1,    ov: 0.9,  storm: 0.3,  rain: 0.3,  wind: 1.3, sea: 1.15, fog: 0.5,  bolt: 0 },
+  rain:     { cover: 1,    ov: 1,    storm: 0.65, rain: 1,    wind: 2.2, sea: 1.6,  fog: 1,    bolt: 0 },
+  storm:    { cover: 1,    ov: 1,    storm: 0.85, rain: 0.85, wind: 2.6, sea: 1.8,  fog: 0.85, bolt: 1 },
+};
+let weatherName = 'cloudy';
+const W = { cover: 0.6, ov: 0, storm: 0, rain: 0, wind: 1, sea: 1, fog: 0, bolt: 0, wet: 0 };
+
+// 雨丝：一团跟着镜头走的短线段，按雨量决定画多少条，在着色器里下落、循环
+const RAIN_N = 16000;
+const rainMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: U.uTime, uRain: U.uRain, uWind: U.uWind, uRainCol: { value: new THREE.Color() } },
+  vertexShader: /* glsl */`
+    uniform float uTime, uRain, uWind;
+    attribute vec4 aSeed;
+    attribute float aEnd;
+    varying float vA;
+    void main(){
+      vec3 box = vec3(60.0, 36.0, 60.0);
+      float speed = 26.0 + aSeed.w * 8.0;
+      vec3 dir = normalize(vec3(uWind * 0.16, -1.0, 0.04 * uWind));      // 风越大雨越斜
+      vec3 p = aSeed.xyz * box + dir * speed * uTime;
+      p = cameraPosition + mod(p - cameraPosition + box * 0.5, box) - box * 0.5;
+      p -= dir * aEnd * (0.5 + 0.5 * uRain) * (0.8 + aSeed.w * 0.6);   // 沿下落方向拉出一小段雨丝
+      float dist = length(p - cameraPosition);
+      vA = step(aSeed.w, uRain) * (1.0 - smoothstep(14.0, 30.0, dist)) * smoothstep(1.0, 3.0, dist);
+      gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    uniform vec3 uRainCol;
+    varying float vA;
+    void main(){
+      if (vA < 0.01) discard;
+      gl_FragColor = vec4(uRainCol, vA * 0.45);
+    }`,
+  transparent: true, depthWrite: false,
+});
+{
+  const seed = new Float32Array(RAIN_N * 8), end = new Float32Array(RAIN_N * 2);
+  for (let i = 0; i < RAIN_N; i++) {
+    const s = [Math.random(), Math.random(), Math.random(), Math.random()];
+    for (let e = 0; e < 2; e++) { seed.set(s, (i * 2 + e) * 4); end[i * 2 + e] = e; }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RAIN_N * 6), 3));
+  g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 4));
+  g.setAttribute('aEnd', new THREE.BufferAttribute(end, 1));
+  const rain = new THREE.LineSegments(g, rainMat);
+  rain.frustumCulled = false;
+  rain.renderOrder = 2;
+  scene.add(rain);
+}
+
+// 闪电：一道带分叉的亮带劈向远处海面，配合几下快速明灭；也有只在云里闪的
+const boltMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.5, 3.6, 4.5), transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide });
+const flashLight = new THREE.DirectionalLight(0xc8d4ff, 0);
+flashLight.target = sunLight.target;
+scene.add(flashLight);
+let lightning = null, nextStrike = 2;
+function boltPath(a, b, segs, jitter) {
+  const pts = [a.clone()];
+  for (let i = 1; i < segs; i++) {
+    pts.push(a.clone().lerp(b, i / segs).add(new THREE.Vector3((Math.random() - 0.5) * jitter, (Math.random() - 0.5) * jitter * 0.3, (Math.random() - 0.5) * jitter)));
+  }
+  pts.push(b.clone());
+  return pts;
+}
+function boltRibbon(pts, width, out) {
+  const side = new THREE.Vector3(), toCam = new THREE.Vector3();
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1], w = width * (1 - i / pts.length * 0.6);
+    toCam.subVectors(camera.position, a).normalize();
+    side.subVectors(b, a).cross(toCam).normalize().multiplyScalar(w);
+    out.push(a.x - side.x, a.y - side.y, a.z - side.z, a.x + side.x, a.y + side.y, a.z + side.z, b.x + side.x, b.y + side.y, b.z + side.z,
+             a.x - side.x, a.y - side.y, a.z - side.z, b.x + side.x, b.y + side.y, b.z + side.z, b.x - side.x, b.y - side.y, b.z - side.z);
+  }
+}
+function strike(withBolt) {
+  const ang = (Math.random() - 0.5) * 1.7, dist = 150 + Math.random() * 280;
+  const base = new THREE.Vector3(camera.position.x + Math.sin(ang) * dist, 0, camera.position.z - Math.cos(ang) * dist);
+  let mesh = null;
+  if (withBolt) {
+    const top = base.clone().add(new THREE.Vector3((Math.random() - 0.5) * 40, 120 + Math.random() * 40, 0));
+    const main = boltPath(top, base, 28, dist * 0.035);
+    const pos = [];
+    boltRibbon(main, 0.9 + dist * 0.003, pos);
+    const nb = 3 + Math.floor(Math.random() * 3);
+    for (let b = 0; b < nb; b++) {
+      const s = main[3 + Math.floor(Math.random() * 15)];
+      const e = s.clone().add(new THREE.Vector3((Math.random() - 0.5) * 50, -20 - Math.random() * 30, (Math.random() - 0.5) * 20));
+      boltRibbon(boltPath(s, e, 8, dist * 0.02), 0.45 + dist * 0.0015, pos);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    mesh = new THREE.Mesh(g, boltMat);
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+  }
+  const r = Math.random;
+  lightning = { t: 0, mesh, near: 1 - (dist - 150) / 280 * 0.6, pulses: [[0, 1], [0.08 + r() * 0.05, 0.5 + r() * 0.5], [0.2 + r() * 0.2, 0.3 + r() * 0.6]] };
+  flashLight.position.copy(base).setY(100);
+}
+function updateLightning(dt) {
+  let f = 0;
+  if (lightning) {
+    lightning.t += dt;
+    for (const [t0, a] of lightning.pulses) if (lightning.t >= t0) f += a * Math.exp(-(lightning.t - t0) * 16);
+    f *= lightning.near;
+    boltMat.opacity = Math.min(1, f * 2);
+    if (lightning.t > 1.2) {
+      if (lightning.mesh) { scene.remove(lightning.mesh); lightning.mesh.geometry.dispose(); }
+      lightning = null;
+    }
+  }
+  if (W.bolt > 0.5) {
+    nextStrike -= dt;
+    if (nextStrike <= 0 && !lightning) { strike(Math.random() < 0.7); nextStrike = 2.5 + Math.random() * 7; }
+  }
+  return f;
+}
+
+const grayTmp = new THREE.Color();
+function grayOf(c, dark) {
+  const l = c.r * 0.3 + c.g * 0.5 + c.b * 0.2;
+  return grayTmp.setRGB(l * 0.95 * dark, l * 0.98 * dark, l * 1.05 * dark);
+}
+// 在 updateDayCycle 算好晴天的光照之后，按天气再修正一遍（天空发灰、阳光变弱、雾变浓……）
+function updateWeather(dt, dynCover, e) {
+  const tg = WEATHER[weatherName];
+  const k = Math.min(1, dt * 0.5);                      // 约 2~3 秒平滑过渡
+  for (const key of ['ov', 'storm', 'rain', 'wind', 'sea', 'fog', 'bolt']) W[key] += (tg[key] - W[key]) * k;
+  W.cover += ((tg.cover ?? dynCover) - W.cover) * k;
+  W.wet = Math.min(1, Math.max(0, W.wet + (W.rain > 0.05 ? dt * 0.08 * W.rain : -dt * 0.01)));   // 下雨慢慢淋湿，雨停慢慢变干
+  const day = smoothstep(-0.1, 0.35, e);
+  const flash = updateLightning(dt);
+
+  U.uCloudCover.value = W.cover;
+  U.uOvercast.value = W.ov;
+  U.uStorm.value = W.storm;
+  U.uRain.value = W.rain;
+  U.uWetness.value = W.wet;
+  U.uSea.value = W.sea;
+  U.uFog.value = W.fog;
+  U.uWind.value = W.wind;
+  U.uFlash.value = flash;
+
+  const ov = W.ov, clear = 1 - ov;
+  U.uZenith.value.lerp(grayOf(U.uZenith.value, 1 - 0.55 * W.storm), ov * 0.85);
+  U.uHorizon.value.lerp(grayOf(U.uHorizon.value, 1 - 0.5 * W.storm), ov * 0.85);
+  U.uGlow.value *= 1 - 0.9 * ov;
+  U.uSunVis.value *= clear * clear;
+  U.uSunI.value *= 1 - 0.9 * ov;
+  U.uCloudLight.value *= 1 - 0.7 * ov;
+  U.uNight.value *= 1 - 0.95 * ov;                     // 阴雨天的夜里看不到月亮和星星
+  U.uMoonI.value *= 1 - 0.95 * ov;
+  const dim = 1 - 0.45 * W.storm;
+  U.uDeep.value.multiplyScalar(dim);
+  U.uShallow.value.lerp(grayOf(U.uShallow.value, 1), ov * 0.4).multiplyScalar(dim);
+
+  sunLight.intensity *= Math.max(0, 1 - 1.1 * ov);     // 阴天几乎没有直射光，影子也就淡没了
+  moonLight.intensity *= 1 - 0.9 * ov;
+  hemi.color.copy(U.uZenith.value).lerp(U.uHorizon.value, 0.4);
+  hemi.intensity = hemi.intensity * (1 - 0.35 * W.storm) + ov * 0.5 * day + flash * 2.0;
+  flashLight.intensity = flash * 3;
+  scene.fog.color.copy(U.uHorizon.value);
+  scene.fog.density = 0.0045 * (1 + 2.5 * W.fog);
+  renderer.toneMappingExposure *= 1 - 0.15 * W.storm;
+  rainMat.uniforms.uRainCol.value.copy(U.uHorizon.value).lerp(U.uZenith.value, 0.3).multiplyScalar(1.6).addScalar(0.08 + flash);
+}
+function setWeather(name) {
+  if (!WEATHER[name]) name = 'cloudy';
+  weatherName = name;
+  document.querySelectorAll('button[data-w]').forEach(b => b.classList.toggle('on', b.dataset.w === name));
+  try { localStorage.setItem('beach-weather', name); } catch {}
+}
+
+// ---------- 海龟 ----------
+// 背甲花纹：俯视图上画椎盾、肋盾、缘盾，再用平面投影贴到半球形背甲上（头朝 +z，对应画布上方）
+function makeCarapaceTexture() {
+  const S = 256, cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d');
+  const X = x => (x * 0.5 + 0.5) * S, Y = z => (0.5 - z * 0.5) * S;
+  g.fillStyle = '#4a3b22';
+  g.fillRect(0, 0, S, S);
+  const scute = (pts, c1, c2) => {
+    const cx = pts.reduce((a, q) => a + q[0], 0) / pts.length, cz = pts.reduce((a, q) => a + q[1], 0) / pts.length;
+    const grad = g.createRadialGradient(X(cx), Y(cz), 2, X(cx), Y(cz), S * 0.17);
+    grad.addColorStop(0, c1);
+    grad.addColorStop(1, c2);
+    g.beginPath();
+    pts.forEach(([x, z], i) => (i ? g.lineTo(X(x), Y(z)) : g.moveTo(X(x), Y(z))));
+    g.closePath();
+    g.fillStyle = grad;
+    g.fill();
+    g.strokeStyle = '#1e160c';
+    g.lineWidth = 3;
+    g.stroke();
+  };
+  for (let i = 0; i < 24; i++) {          // 缘盾
+    const a0 = i / 24 * Math.PI * 2, a1 = (i + 1) / 24 * Math.PI * 2;
+    scute([[0.82 * Math.cos(a0), 0.82 * Math.sin(a0)], [Math.cos(a0), Math.sin(a0)], [Math.cos(a1), Math.sin(a1)], [0.82 * Math.cos(a1), 0.82 * Math.sin(a1)]], '#6b5530', '#3e3019');
+  }
+  g.save();
+  g.beginPath();
+  g.arc(S / 2, S / 2, S * 0.41, 0, Math.PI * 2);
+  g.clip();
+  const cz = [0.75, 0.36, 0.0, -0.36, -0.75];
+  for (const s of [-1, 1]) for (let i = 0; i < 4; i++) {   // 肋盾
+    scute([[s * 0.2, cz[i]], [s * 1.0, cz[i] + 0.05], [s * 1.0, cz[i + 1] + 0.05], [s * 0.2, cz[i + 1]]], '#94783f', '#4a3a20');
+  }
+  const zs = [0.85, 0.5, 0.18, -0.14, -0.46, -0.85];
+  for (let i = 0; i < 5; i++) {                            // 椎盾
+    const z0 = zs[i], z1 = zs[i + 1], w = 0.22;
+    scute([[-w * 0.75, z0], [w * 0.75, z0], [w, (z0 + z1) / 2], [w * 0.75, z1], [-w * 0.75, z1], [-w, (z0 + z1) / 2]], '#9c8048', '#4f3e22');
+  }
+  g.restore();
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const turtleShellGeo = new THREE.SphereGeometry(1, 32, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+{
+  const pa = turtleShellGeo.attributes.position, uv = turtleShellGeo.attributes.uv;
+  for (let i = 0; i < pa.count; i++) uv.setXY(i, pa.getX(i) * 0.5 + 0.5, pa.getZ(i) * 0.5 + 0.5);
+}
+const turtlePlastronGeo = new THREE.SphereGeometry(1, 24, 6, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+function flipperGeo(pts, thick) {
+  const sh = new THREE.Shape();
+  pts.forEach(([x, z], i) => (i ? sh.lineTo(x, -z) : sh.moveTo(x, -z)));
+  const g = new THREE.ExtrudeGeometry(sh, { depth: thick, bevelEnabled: true, bevelThickness: thick * 0.4, bevelSize: 0.02, bevelSegments: 1 });
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, -thick / 2, 0);
+  return g;
+}
+const frontFlipperGeo = flipperGeo([[0, 0.09], [0.2, 0.12], [0.45, 0.08], [0.7, -0.02], [0.82, -0.12], [0.72, -0.15], [0.45, -0.11], [0.2, -0.09], [0, -0.07]], 0.03);
+const rearFlipperGeo = flipperGeo([[0, 0.07], [0.15, 0.1], [0.28, 0.06], [0.33, -0.03], [0.26, -0.11], [0.12, -0.1], [0, -0.06]], 0.03);
+const shellTex = makeCarapaceTexture();
+const ADULT_MATS = {
+  shell: new THREE.MeshStandardMaterial({ map: shellTex, roughness: 0.55 }),
+  belly: new THREE.MeshStandardMaterial({ color: '#d9c48a', roughness: 0.7 }),
+  skin: new THREE.MeshStandardMaterial({ color: '#76643f', roughness: 0.75 }),
+};
+const HATCH_MATS = {
+  shell: new THREE.MeshStandardMaterial({ map: shellTex, color: '#8a8478', roughness: 0.6 }),
+  belly: new THREE.MeshStandardMaterial({ color: '#b8ad94', roughness: 0.7 }),
+  skin: new THREE.MeshStandardMaterial({ color: '#5e584c', roughness: 0.75 }),
+};
+
+// root(位置/朝向) → roll(绕前后轴翻滚) → body(以背甲底面为原点)
+function makeTurtle(size, m, shadow) {
+  const root = new THREE.Group();
+  const roll = new THREE.Group();
+  root.add(roll);
+  const body = new THREE.Group();
+  roll.add(body);
+  const shell = new THREE.Mesh(turtleShellGeo, m.shell);
+  shell.scale.set(0.55, 0.26, 0.75);
+  body.add(shell);
+  const belly = new THREE.Mesh(turtlePlastronGeo, m.belly);
+  belly.scale.set(0.5, 0.07, 0.7);
+  body.add(belly);
+  const neck = new THREE.Group();
+  neck.position.set(0, 0, 0.66);
+  body.add(neck);
+  part(critterSphere, m.skin, 0.1, 0.09, 0.14, 0, 0, 0.06, neck);
+  part(critterSphere, m.skin, 0.13, 0.11, 0.18, 0, 0.03, 0.2, neck);
+  for (const s of [-1, 1]) part(critterSphere, eyeMat, 0.025, 0.025, 0.025, s * 0.09, 0.07, 0.27, neck);
+  part(critterSphere, m.skin, 0.05, 0.04, 0.12, 0, -0.01, -0.75, body);
+  const front = [], rear = [];
+  for (const s of [-1, 1]) {
+    const side = new THREE.Group();
+    side.scale.x = s;
+    body.add(side);
+    const f = new THREE.Group();
+    f.position.set(0.4, -0.02, 0.4);
+    f.add(new THREE.Mesh(frontFlipperGeo, m.skin));
+    side.add(f);
+    front.push(f);
+    const r = new THREE.Group();
+    r.position.set(0.3, -0.03, -0.5);
+    r.add(new THREE.Mesh(rearFlipperGeo, m.skin));
+    side.add(r);
+    rear.push(r);
+  }
+  root.scale.setScalar(size);
+  if (shadow) root.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  scene.add(root);
+  return { root, roll, body, neck, front, rear, size };
+}
+// 爬行：前鳍先抬起前伸，再撑地向后划，身体随之往前一冲
+function poseTurtleCrawl(T, ph, amp, alternate = false) {
+  T.front.forEach((f, i) => {
+    const q = ph + (alternate && i ? Math.PI : 0);
+    f.rotation.set(0, 0.2 + 0.65 * Math.cos(q) * amp, -0.12 + Math.max(0, Math.sin(q)) * 0.4 * amp);
+  });
+  T.rear.forEach((r, i) => r.rotation.set(0, 0.9 + Math.sin(ph + (i ? Math.PI : 0)) * 0.3 * amp, -0.1));
+  T.neck.rotation.set(-0.1 + Math.sin(ph + 1) * 0.12 * amp, 0, 0);
+}
+function poseTurtleFlail(T, t) {
+  T.front.forEach((f, i) => f.rotation.set(0, 0.2 + Math.sin(t * 9 + i * 1.7) * 0.7, Math.sin(t * 7.3 + i) * 0.6));
+  T.rear.forEach((r, i) => r.rotation.set(0, 0.9 + Math.sin(t * 8 + i * 2.1) * 0.5, Math.sin(t * 6.1 + i) * 0.5));
+  T.neck.rotation.set(Math.sin(t * 3.1) * 0.5, Math.sin(t * 2.3) * 0.4, 0);
+}
+// 一下一下地划：k 是这段路的进度，返回身体实际走到哪（只在后划时前进）、划水相位、身体抬起量
+function strokeProgress(k, n) {
+  const c = k * n, i = Math.min(Math.floor(c), n - 1), local = c - i;
+  const g = local < 0.5 ? 0 : (1 - Math.cos((local - 0.5) * 2 * Math.PI)) / 2;
+  return { s: Math.min(1, (i + g) / n), ph: local * Math.PI * 2, lift: local < 0.5 ? 0 : Math.sin((local - 0.5) * 2 * Math.PI) * 0.04 };
+}
+const tangentHeading = (curve, s) => { const t = curve.getTangentAt(Math.min(0.999, Math.max(0.001, s))); return Math.atan2(t.x, t.z); };
+// 不同翻滚角下，身体最低点到原点的距离（正放时是腹甲，翻过来是背甲）
+function turtleSupport(roll) {
+  const c = Math.cos(roll), s = Math.sin(roll), hb = c >= 0 ? 0.07 : 0.26;
+  return Math.sqrt((0.55 * s) ** 2 + (hb * c) ** 2);
+}
+
+// 刨沙时飞溅的沙粒
+const SPRAY_N = 120;
+const sprayMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 5, 4), new THREE.MeshStandardMaterial({ color: '#d8c08c', roughness: 1 }), SPRAY_N);
+sprayMesh.frustumCulled = false;
+scene.add(sprayMesh);
+const spray = Array.from({ length: SPRAY_N }, () => ({ life: 0, p: new THREE.Vector3(), v: new THREE.Vector3(), s: 0 }));
+let sprayNext = 0, sprayAcc = 0;
+function emitSand(pos, dirX, dirZ, n) {
+  for (let i = 0; i < n; i++) {
+    const s = spray[sprayNext];
+    sprayNext = (sprayNext + 1) % SPRAY_N;
+    s.life = 1;
+    s.p.copy(pos);
+    s.v.set(dirX * (1 + Math.random() * 2) + (Math.random() - 0.5) * 1.2, 1.5 + Math.random() * 2, dirZ * (1 + Math.random() * 2) + (Math.random() - 0.5) * 1.2);
+    s.s = 0.02 + Math.random() * 0.025;
+  }
+}
+function updateSpray(dt) {
+  for (let i = 0; i < SPRAY_N; i++) {
+    const s = spray[i];
+    if (s.life > 0) {
+      s.v.y -= 9.8 * dt;
+      s.p.addScaledVector(s.v, dt);
+      s.life -= dt * 1.2;
+      if (s.p.y < sandMeshHeight(s.p.x, s.p.z)) s.life = 0;
+    }
+    dummy.position.copy(s.p);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.setScalar(s.life > 0 ? s.s : 0);
+    dummy.updateMatrix();
+    sprayMesh.setMatrixAt(i, dummy.matrix);
+  }
+  sprayMesh.instanceMatrix.needsUpdate = true;
+}
+
+// 海龟爬过留下的痕迹：中间腹甲拖出的浅沟 + 两侧前鳍划出的斜纹，沿路径逐段显露
+const trackMat = (() => {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 64;
+  const g = cv.getContext('2d');
+  const grd = g.createLinearGradient(16, 0, 48, 0);
+  grd.addColorStop(0, 'rgba(60,45,25,0)');
+  grd.addColorStop(0.5, 'rgba(60,45,25,0.35)');
+  grd.addColorStop(1, 'rgba(60,45,25,0)');
+  g.fillStyle = grd;
+  g.fillRect(16, 0, 32, 64);
+  g.strokeStyle = 'rgba(50,38,20,0.75)';
+  g.lineWidth = 5;
+  g.lineCap = 'round';
+  for (const y of [8, 40]) {
+    g.beginPath(); g.moveTo(3, y); g.lineTo(15, y + 12); g.stroke();
+    g.beginPath(); g.moveTo(61, y); g.lineTo(49, y + 12); g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 1,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+})();
+function makeTrack(curve, width) {
+  const L = curve.getLength(), n = Math.ceil(L / 0.3);
+  const pts = [], ss = [];
+  for (let i = 0; i <= n; i++) {
+    const s = i / n, q = curve.getPointAt(s);
+    if (q.z - shoreZ(q.x) < 0.8) continue;      // 浪打得到的地方留不住痕迹
+    pts.push(q); ss.push(s);
+  }
+  if (pts.length < 2) return null;
+  const pos = [], uv = [], idx = [];
+  let dist = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const q = pts[i], a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, pts.length - 1)];
+    const dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz) || 1;
+    if (i) dist += q.distanceTo(pts[i - 1]);
+    for (const k of [-1, 1]) {
+      const x = q.x - dz / l * width / 2 * k, z = q.z + dx / l * width / 2 * k;
+      pos.push(x, sandMeshHeight(x, z) + 0.015, z);
+      uv.push(k < 0 ? 0 : 1, dist / 0.7);
+    }
+    if (i) { const o = (i - 1) * 2; idx.push(o, o + 1, o + 2, o + 1, o + 3, o + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  g.setDrawRange(0, 0);
+  const mesh = new THREE.Mesh(g, trackMat);
+  mesh.receiveShadow = true;
+  mesh.userData.ownGeometry = true;
+  scene.add(mesh);
+  return { mesh, ss };
+}
+function revealTrack(tr, s) {
+  if (!tr) return;
+  let n = 0;
+  while (n < tr.ss.length && tr.ss[n] <= s) n++;
+  tr.mesh.geometry.setDrawRange(0, Math.max(0, n - 1) * 6);
+}
+// 只有爬痕的几何体是每次新建的，需要释放；其它都是共享几何体
+const removeMesh = m => { if (m) { scene.remove(m); if (m.userData.ownGeometry) m.geometry.dispose(); } };
+
+// 海龟巢：翻动过的沙堆
+const nestMat = new THREE.MeshStandardMaterial({ color: '#dcc597', roughness: 1 });
+const moundGeo = new THREE.SphereGeometry(1, 20, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+{ // 边缘不规则、表面坑坑洼洼的翻动沙堆
+  const pa = moundGeo.attributes.position;
+  for (let i = 0; i < pa.count; i++) {
+    const x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i), a = Math.atan2(z, x);
+    const r = 1 + 0.12 * Math.sin(a * 3 + 1) + 0.08 * Math.sin(a * 7);
+    pa.setXYZ(i, x * r, y * (0.8 + 0.4 * noise2(x * 3 + 5, z * 3)), z * r);
+  }
+  moundGeo.computeVertexNormals();
+}
+const nests = [];
+function makeNest(x, z, night) {
+  const mound = new THREE.Mesh(moundGeo, nestMat);
+  mound.position.set(x, sandMeshHeight(x, z) - 0.03, z);
+  mound.scale.set(1, 0.16, 1);
+  mound.receiveShadow = true;
+  scene.add(mound);
+  const nest = { x, z, mound, night, hatched: false, hatchNight: -1, extras: [] };
+  nests.push(nest);
+  return nest;
+}
+{ // 开场时沙滩上已经有一个之前留下的巢，第一晚就能孵化
+  let x, z;
+  do { x = (Math.random() - 0.5) * 18; z = shoreZ(x) + 15 + Math.random() * 4; } while (nearPalm(x, z, 3));
+  makeNest(x, z, -1);
+}
+
+const eggMat = new THREE.MeshStandardMaterial({ color: '#f3efe2', roughness: 0.5 });
+const eggTopGeo = new THREE.SphereGeometry(1, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+const eggBottomGeo = new THREE.SphereGeometry(1, 12, 6, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+const pitMat = new THREE.MeshStandardMaterial({ color: '#8a7550', roughness: 1, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+const pitGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
+
+// 夜晚窗口：日落后到日出前，事件进度 u 跟着时间轴走
+const NIGHT_START = pAtTheta(Math.PI + 0.06);
+const NIGHT_LEN = 1 + pAtTheta(-0.06) - NIGHT_START;
+const nightU = pp => { const u = ((pp - NIGHT_START + 1) % 1) / NIGHT_LEN; return u <= 1 ? u : -1; };
+const segK = (u, a, b) => THREE.MathUtils.clamp((u - a) / (b - a), 0, 1);
+
+// ① 海龟妈妈上岸产蛋
+function createNestingEvent(night) {
+  const size = 1.3;
+  let x0, nx, nz, tries = 0;
+  do {
+    x0 = (Math.random() - 0.5) * 30;
+    nx = x0 + (Math.random() - 0.5) * 6;
+    nz = shoreZ(nx) + 10 + Math.random() * 4;
+  } while ((nearPalm(nx, nz, 3.5) || nests.some(n => Math.hypot(n.x - nx, n.z - nz) < 4)) && ++tries < 30);
+  const W = new THREE.Vector3(x0, 0, shoreZ(x0) - 12), N = new THREE.Vector3(nx, 0, nz);
+  const upPts = [W];
+  for (let k = 1; k < 4; k++) upPts.push(W.clone().lerp(N, k / 4).add(new THREE.Vector3((Math.random() - 0.5) * 2, 0, 0)));
+  upPts.push(N);
+  const x2 = nx + (Math.random() - 0.5) * 8;
+  const W2 = new THREE.Vector3(x2, 0, shoreZ(x2) - 12);
+  const downPts = [N];
+  for (let k = 1; k < 4; k++) downPts.push(N.clone().lerp(W2, k / 4).add(new THREE.Vector3((Math.random() - 0.5) * 2, 0, 0)));
+  downPts.push(W2);
+  const up = new THREE.CatmullRomCurve3(upPts), down = new THREE.CatmullRomCurve3(downPts);
+  const hUp = tangentHeading(up, 1);
+  const hLay = hUp + (Math.random() < 0.5 ? -1 : 1) * 1.35;          // 侧过身来挖坑，镜头能看到下蛋
+  const nestPos = N.clone().addScaledVector(new THREE.Vector3(Math.sin(hLay), 0, Math.cos(hLay)), -0.95 * size);
+  nestPos.y = sandMeshHeight(nestPos.x, nestPos.z);
+  const pit = new THREE.Mesh(pitGeo, pitMat);
+  pit.position.copy(nestPos).y += 0.01;
+  pit.visible = false;
+  scene.add(pit);
+  const eggs = [];
+  for (let i = 0; i < 14; i++) {
+    const a = Math.random() * 6.28, r = Math.random() * 0.22;
+    const egg = new THREE.Mesh(critterSphere, eggMat);
+    egg.scale.setScalar(0.065);
+    egg.position.set(nestPos.x + Math.cos(a) * r, nestPos.y + 0.03, nestPos.z + Math.sin(a) * r);
+    egg.visible = false;
+    scene.add(egg);
+    eggs.push(egg);
+  }
+  return {
+    T: makeTurtle(size, ADULT_MATS, true), night, up, down, hUp, hLay, hDown: tangentHeading(down, 0), N, nestPos, pit, eggs,
+    trackUp: makeTrack(up, 1.7), trackDown: makeTrack(down, 1.7), nest: null,
+  };
+}
+function updateNesting(ev, u, gdt, gameT) {
+  const T = ev.T, sz = T.size;
+  const pos = new THREE.Vector3();
+  let heading, lift = 0, sink = 0;
+  T.body.rotation.x = 0;
+  if (u < 0.34) {                                            // 从海里爬上来
+    const st = strokeProgress(segK(u, 0, 0.34), 12);
+    ev.up.getPointAt(st.s, pos);
+    heading = tangentHeading(ev.up, st.s);
+    poseTurtleCrawl(T, st.ph, 1);
+    lift = st.lift;
+    revealTrack(ev.trackUp, st.s);
+  } else if (u < 0.76) {                                     // 转身 → 挖坑 → 下蛋 → 埋沙 → 转向大海
+    pos.copy(ev.N);
+    revealTrack(ev.trackUp, 1);
+    const k1 = smoothstep(0, 1, segK(u, 0.34, 0.38)), k2 = smoothstep(0, 1, segK(u, 0.72, 0.76));
+    heading = lerpAngle(lerpAngle(ev.hUp, ev.hLay, k1), ev.hDown, k2);
+    const dig = segK(u, 0.38, 0.5), lay = segK(u, 0.5, 0.62), cover = segK(u, 0.62, 0.72);
+    sink = Math.min(segK(u, 0.38, 0.46), 1 - segK(u, 0.64, 0.72)) * 0.12;
+    if (u < 0.38 || u >= 0.72) poseTurtleCrawl(T, u * 220, 0.6);
+    else {
+      const ph = gameT * 7;
+      T.front.forEach((f, i) => f.rotation.set(0, 0.25 + (u > 0.62 ? Math.sin(ph + i * Math.PI) * 0.5 : 0), -0.15));
+      T.rear.forEach((r, i) => {
+        const busy = u < 0.5 || u > 0.62;                  // 挖坑和埋沙时后鳍轮流铲沙
+        r.rotation.set(0, 1.3 + (busy ? Math.sin(ph + i * Math.PI) * 0.5 : 0), -0.25 + (busy ? Math.max(0, Math.sin(ph + i * Math.PI)) * 0.6 : 0));
+      });
+      T.neck.rotation.set(0.15 + (u >= 0.5 && u < 0.62 ? Math.sin(gameT * 1.5) * 0.08 : 0), 0, 0);
+      T.body.rotation.x = -0.08;
+      if (u < 0.5 || u > 0.62) {
+        sprayAcc += gdt * 35;
+        const back = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading)).multiplyScalar(-1);
+        while (sprayAcc >= 1) { sprayAcc -= 1; emitSand(ev.nestPos.clone().addScaledVector(back, 0.3).setY(ev.nestPos.y + 0.1), back.x, back.z, 1); }
+      }
+    }
+    ev.pit.visible = dig > 0 && cover < 1;
+    ev.pit.scale.setScalar(Math.max(0.01, 0.45 * sz * Math.min(dig, 1 - cover * 0.9)));
+    const shown = cover > 0 ? Math.round(ev.eggs.length * (1 - cover * 1.4)) : Math.floor(lay * ev.eggs.length);
+    ev.eggs.forEach((egg, i) => { egg.visible = i < shown; });
+    if (cover > 0 && !ev.nest) ev.nest = makeNest(ev.nestPos.x, ev.nestPos.z, ev.night);
+    if (ev.nest) ev.nest.mound.scale.set(0.75 * sz, 0.13 * sz * Math.max(0.05, cover), 0.75 * sz);
+  } else {                                                   // 爬回海里
+    const st = strokeProgress(segK(u, 0.76, 1), 12);
+    ev.down.getPointAt(st.s, pos);
+    heading = tangentHeading(ev.down, st.s);
+    poseTurtleCrawl(T, st.ph, 1);
+    lift = st.lift - smoothstep(0.8, 1, st.s) * 0.5;
+    revealTrack(ev.trackUp, 1);
+    revealTrack(ev.trackDown, st.s);
+    ev.pit.visible = false;
+  }
+  T.root.position.set(pos.x, sandMeshHeight(pos.x, pos.z) + (0.07 + lift - sink) * sz, pos.z);
+  T.root.rotation.y = heading;
+}
+function endNesting(ev, u) {
+  removeMesh(ev.T.root);
+  removeMesh(ev.pit);
+  ev.eggs.forEach(removeMesh);
+  if (!ev.nest) {                // 时间轴被拖走、没来得及下完蛋：痕迹也一起清掉
+    if (ev.trackUp) removeMesh(ev.trackUp.mesh);
+    if (ev.trackDown) removeMesh(ev.trackDown.mesh);
+  } else {
+    revealTrack(ev.trackUp, 1); revealTrack(ev.trackDown, 1);
+    ev.nest.mound.scale.set(0.75 * ev.T.size, 0.13 * ev.T.size, 0.75 * ev.T.size);
+    ev.nest.extras.push(ev.trackUp && ev.trackUp.mesh, ev.trackDown && ev.trackDown.mesh);
+  }
+}
+
+// ② 小海龟破壳，奔向大海
+function createHatchEvent(night) {
+  let nest = nests.find(n => n.night < night && !n.hatched);
+  if (!nest) {
+    let x, z;
+    do { x = (Math.random() - 0.5) * 18; z = shoreZ(x) + 14 + Math.random() * 5; } while (nearPalm(x, z, 3));
+    nest = makeNest(x, z, night - 1);
+  }
+  nest.hatched = true;
+  nest.hatchNight = night;
+  const babies = [];
+  const n = 7 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 6.28, r = 0.1 + Math.random() * 0.3;
+    const ex = nest.x + Math.cos(a) * r, ez = nest.z + Math.sin(a) * r;
+    const egg = new THREE.Group();
+    const bottom = new THREE.Mesh(eggBottomGeo, eggMat), top = new THREE.Mesh(eggTopGeo, eggMat);
+    egg.add(bottom, top);
+    egg.scale.set(0.06, 0.075, 0.06);
+    egg.position.set(ex, sandMeshHeight(ex, ez), ez);
+    egg.visible = false;
+    scene.add(egg);
+    nest.extras.push(egg);
+    const crack = 0.1 + i * 0.03 + Math.random() * 0.03;
+    const start = crack + 0.03;
+    const dur = Math.min(0.35 + Math.random() * 0.15, 0.99 - start);
+    const tx = ex + (Math.random() - 0.5) * 6;
+    const T = makeTurtle(0.22, HATCH_MATS, false);
+    T.root.visible = false;
+    babies.push({ T, egg, top, ex, ez, crack, start, dur, tx, tz: shoreZ(tx) - 1.5, phase: Math.random() * 6.28, strokes: 30 + Math.random() * 15 });
+  }
+  return { nest, babies };
+}
+function updateHatching(ev, u, gameT) {
+  const nest = ev.nest;
+  // 沙子底下先有动静，随后巢顶塌下去，蛋露出来
+  nest.mound.scale.y = Math.max(0.02, 0.16 * (1 - segK(u, 0.05, 0.12))) + (u > 0.03 && u < 0.12 ? Math.sin(gameT * 18) * 0.015 : 0);
+  for (const b of ev.babies) {
+    const appear = segK(u, 0.06, 0.1);
+    b.egg.visible = appear > 0;
+    b.egg.position.y = sandMeshHeight(b.ex, b.ez) - 0.06 + appear * 0.07;
+    b.egg.rotation.z = u > b.crack - 0.04 && u < b.crack ? Math.sin(gameT * 25 + b.phase) * 0.25 : 0;
+    const ck = segK(u, b.crack, b.crack + 0.02);                 // 破壳：上半个蛋壳被顶开
+    b.top.position.set(ck * 0.8, ck * 0.6, 0);
+    b.top.rotation.z = -ck * 1.6;
+    const T = b.T;
+    if (u < b.crack) { T.root.visible = false; continue; }
+    const kk = (u - b.start) / b.dur;
+    if (kk > 1) { T.root.visible = false; continue; }
+    T.root.visible = true;
+    const k = Math.max(0, kk);
+    const dx = b.tx - b.ex, dz = b.tz - b.ez, l = Math.hypot(dx, dz);
+    const wig = Math.sin(k * Math.PI * 4 + b.phase) * 0.35 * (1 - k);
+    const x = b.ex + dx * k - dz / l * wig, z = b.ez + dz * k + dx / l * wig;
+    const grow = Math.min(1, (u - b.crack) / 0.03);
+    const fade = 1 - smoothstep(0.9, 1, k);                       // 冲进浪里消失
+    T.root.scale.setScalar(0.22 * grow * fade + 0.0001);
+    T.root.position.set(x, sandMeshHeight(x, z) + 0.07 * 0.22 - smoothstep(0.85, 1, k) * 0.08, z);
+    T.root.rotation.y = Math.atan2(dx, dz) + Math.cos(k * Math.PI * 4 + b.phase) * 0.5 * (1 - k);
+    poseTurtleCrawl(T, k * b.strokes * Math.PI * 2, kk < 0 ? 0.3 : 1, true);
+  }
+}
+function endHatching(ev) {
+  ev.babies.forEach(b => removeMesh(b.T.root));
+}
+
+// ③ 被海浪冲上岸、翻了个底朝天的海龟
+let washed = null;
+let nextWashedIn = 30 + Math.random() * 40;
+function startWashedTurtle() {
+  const x = (Math.random() - 0.5) * 24;
+  washed = {
+    T: makeTurtle(1.1, ADULT_MATS, true), t: 0, px: x, pz: 0,
+    z0: shoreZ(x) - 6, z1: shoreZ(x) + 2.8 + Math.random() * 1.5,
+    yaw: Math.random() * 6.28, spin: Math.random() < 0.5 ? -1 : 1, fd: Math.random() < 0.5 ? -1 : 1,
+    cycle: 0, sinkT: 0,
+  };
+}
+function updateWashed(dt) {
+  const w = washed, T = w.T;
+  w.t += dt;
+  const t = w.t, ph = (a, b) => segK(t, a, b);
+  const upside = 3 * Math.PI * w.fd;
+  let roll, lift = 0;
+  if (t < 1.6) {                                              // 被浪卷着翻滚上岸
+    const k = ph(0, 1.6);
+    w.pz = THREE.MathUtils.lerp(w.z0, w.z1, 1 - (1 - k) ** 2);
+    roll = upside * smoothstep(0, 1, k);
+    lift = Math.sin(Math.PI * k) * 0.7;
+    w.yaw += dt * 2 * w.spin;
+    poseTurtleFlail(T, t);
+  } else if (t < 8.6) {
+    if (t < 4.5) roll = upside + Math.sin(t * 2.4) * 0.15;                               // 四脚朝天乱划
+    else if (t < 5.3) roll = upside + w.fd * 0.9 * Math.sin(Math.PI * ph(4.5, 5.3));    // 用力一撑，没翻过去
+    else if (t < 6.4) roll = upside + Math.sin(t * 2.6) * 0.18;
+    else if (t < 7.3) {                                                                  // 再来一次，翻过来了
+      const k = ph(6.4, 7.3);
+      roll = upside + w.fd * Math.PI * smoothstep(0, 1, k);
+      lift = Math.sin(Math.PI * k) * 0.25;
+    } else {                                                                             // 踉跄几下，转向大海
+      const k = ph(7.3, 8.6);
+      roll = upside + w.fd * Math.PI + Math.sin(k * Math.PI * 3) * 0.25 * (1 - k);
+      w.yaw = lerpAngle(w.yaw, Math.PI, Math.min(1, dt * 2));
+    }
+    if (t < 7.3) poseTurtleFlail(T, t);
+    else poseTurtleCrawl(T, t * 6, 0.6);
+  } else {                                                    // 一下一下爬回海里
+    roll = upside + w.fd * Math.PI;
+    w.yaw = lerpAngle(w.yaw, Math.PI, Math.min(1, dt * 3));
+    w.cycle += dt * 0.9;
+    const local = w.cycle % 1;
+    const step = local > 0.5 ? 2.4 * Math.sin((local - 0.5) * 2 * Math.PI) * dt : 0;
+    w.px += Math.sin(w.yaw) * step;
+    w.pz += Math.cos(w.yaw) * step;
+    poseTurtleCrawl(T, local * Math.PI * 2, 1);
+    if (w.pz < shoreZ(w.px) - 2) w.sinkT += dt;
+    lift = -w.sinkT * 0.5;
+    if (w.sinkT > 1.5) { removeMesh(T.root); washed = null; return; }
+  }
+  T.roll.rotation.z = roll;
+  T.root.rotation.y = w.yaw;
+  T.root.position.set(w.px, sandMeshHeight(w.px, w.pz) + turtleSupport(roll) * T.size + lift, w.pz);
+}
+
+let night = null, nightId = 0, turtleInit = false, forceTurtleNight = false, gameT = 0;
+function beginNight() {
+  nightId++;
+  // 上一晚孵化过的巢和蛋壳、更早的爬痕，到新的夜晚就被风和潮水抹平了
+  for (let i = nests.length - 1; i >= 0; i--) {
+    const n = nests[i];
+    if (n.hatched && n.hatchNight < nightId) { removeMesh(n.mound); n.extras.forEach(removeMesh); nests.splice(i, 1); }
+    else if (n.night < nightId) { n.extras.forEach(removeMesh); n.extras.length = 0; }
+  }
+  const first = nightId === 1;
+  const doNest = forceTurtleNight || first || Math.random() < 0.55;
+  const doHatch = forceTurtleNight || first || Math.random() < 0.45;
+  forceTurtleNight = false;
+  night = { nest: doNest ? createNestingEvent(nightId) : null, hatch: doHatch ? createHatchEvent(nightId) : null };
+}
+function endNight() {
+  if (night && night.nest) endNesting(night.nest);
+  if (night && night.hatch) endHatching(night.hatch);
+  night = null;
+}
+function updateTurtles(dt, gdt, e) {
+  gameT += gdt;
+  const u = nightU(p);
+  if (!turtleInit) { turtleInit = true; if (u >= 0) night = {}; }   // 开场就在夜里：这一晚不安排
+  if (u >= 0 && !night) beginNight();
+  if (u < 0 && night) endNight();
+  if (night && u >= 0) {
+    if (night.nest) updateNesting(night.nest, u, gdt, gameT);
+    if (night.hatch) updateHatching(night.hatch, u, gameT);
+  }
+  if (washed) updateWashed(dt);
+  else {
+    nextWashedIn -= dt;
+    if (nextWashedIn <= 0) {
+      nextWashedIn = 50 + Math.random() * 50;
+      if (e > -0.02) startWashedTurtle();
+    }
+  }
+  updateSpray(dt);
+}
+window.addEventListener('keydown', ev => {
+  if (ev.code === 'KeyT' && !washed) startWashedTurtle();
+  if (ev.code === 'KeyN') {         // 跳到刚入夜，并保证这一晚有产蛋和孵化
+    setRealtime(false);
+    endNight();
+    forceTurtleNight = true;
+    p = (NIGHT_START + 0.0005) % 1;
+  }
+});
+
+// ---------- 界面 ----------
+const elClock = document.getElementById('clock');
+const elPhase = document.getElementById('phase');
+const slider = document.getElementById('timeline');
+const playBtn = document.getElementById('play');
+let p = 0, speed = 1, playing = true, scrubbing = false;
+// 支持 ?t=0.4（0~1 的一天中的位置）和 &paused=1，方便分享某个时刻
+{
+  const q = new URLSearchParams(location.search);
+  if (q.has('t')) p = Math.min(0.999, Math.max(0, parseFloat(q.get('t')) || 0));
+  if (q.get('paused') === '1') { playing = false; playBtn.textContent = '▶ 播放'; }
+}
+
+document.getElementById('tRise').style.left = (pAtTheta(0) * 100) + '%';
+document.getElementById('tNoon').style.left = (pAtTheta(Math.PI / 2) * 100) + '%';
+document.getElementById('tSet').style.left = (pAtTheta(Math.PI) * 100) + '%';
+
+slider.addEventListener('pointerdown', () => { scrubbing = true; setRealtime(false); });
+window.addEventListener('pointerup', () => { scrubbing = false; });
+slider.addEventListener('input', () => { p = slider.value / 1000; });
+
+// 实时模式：场景时间直接取电脑时钟（06:00 日出、18:00 日落），一天就是真实的 24 小时
+let realtime = false;
+const realtimeBtn = document.getElementById('realtime');
+function hoursToP(h) {
+  let th = (h - 6) / 12 * Math.PI;
+  while (th < -A) th += Math.PI * 2;
+  while (th >= Math.PI * 2 - A) th -= Math.PI * 2;
+  return th <= Math.PI + A
+    ? DAYF * (th + A) / (Math.PI + 2 * A)
+    : DAYF + (1 - DAYF) * (th - Math.PI - A) / (Math.PI - 2 * A);
+}
+function clockP() {
+  const d = new Date();
+  return hoursToP(d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600 + d.getMilliseconds() / 3.6e6);
+}
+function setRealtime(on) {
+  realtime = on;
+  realtimeBtn.classList.toggle('on', on);
+  document.querySelectorAll('button[data-s]').forEach(b => b.classList.toggle('on', !on && parseFloat(b.dataset.s) === speed));
+  if (on) { playing = true; playBtn.textContent = '⏸ 暂停'; p = clockP(); }
+}
+realtimeBtn.addEventListener('click', () => setRealtime(!realtime));
+
+const togglePlay = () => {
+  if (realtime) setRealtime(false);
+  playing = !playing;
+  playBtn.textContent = playing ? '⏸ 暂停' : '▶ 播放';
+};
+playBtn.addEventListener('click', togglePlay);
+window.addEventListener('keydown', ev => { if (ev.code === 'Space') { ev.preventDefault(); togglePlay(); } });
+document.querySelectorAll('button[data-s]').forEach(btn => btn.addEventListener('click', () => {
+  speed = parseFloat(btn.dataset.s);
+  setRealtime(false);
+}));
+if (new URLSearchParams(location.search).get('realtime') === '1') setRealtime(true);
+
+// ---------- 画质 ----------
+// pr：渲染分辨率；sky：天空相对画面的分辨率（<1 时先画到小纹理再铺满）；level：着色器细节
+const QUALITY = {
+  high:   { pr: Math.min(devicePixelRatio, 1.5),     sky: 1,    level: 2, shadow: 2048 },
+  medium: { pr: Math.min(devicePixelRatio, 1) * 0.8, sky: 0.5,  level: 1, shadow: 2048 },
+  low:    { pr: Math.min(devicePixelRatio, 1) * 0.6, sky: 0.35, level: 0, shadow: 1024 },
+};
+const skyScene = new THREE.Scene();
+let skyRT = null, quality = null;
+function resizeSkyRT() {
+  if (!skyRT) return;
+  const v = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const s = QUALITY[quality].sky;
+  skyRT.setSize(Math.max(1, Math.round(v.x * s)), Math.max(1, Math.round(v.y * s)));
+}
+function applyQuality(name) {
+  if (!QUALITY[name]) name = 'medium';
+  const q = QUALITY[name];
+  quality = name;
+  renderer.setPixelRatio(q.pr);
+  renderer.setSize(innerWidth, innerHeight);
+  for (const m of qualityMats) { m.defines = { ...m.defines, QUALITY: q.level }; m.needsUpdate = true; }
+  if (q.sky < 1) {
+    // 天空和云很柔和，低分辨率渲染再放大几乎看不出差别，却能省下大量像素计算
+    skyRT ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+    skyScene.add(sky);
+    resizeSkyRT();
+    scene.background = skyRT.texture;
+  } else {
+    scene.add(sky);
+    scene.background = null;
+  }
+  if (sunLight.shadow.mapSize.x !== q.shadow) {
+    sunLight.shadow.mapSize.set(q.shadow, q.shadow);
+    if (sunLight.shadow.map) { sunLight.shadow.map.dispose(); sunLight.shadow.map = null; }
+  }
+  document.querySelectorAll('button[data-q]').forEach(b => b.classList.toggle('on', b.dataset.q === name));
+  try { localStorage.setItem('beach-quality', name); } catch {}
+}
+document.querySelectorAll('button[data-q]').forEach(b => b.addEventListener('click', () => applyQuality(b.dataset.q)));
+{
+  let saved = null;
+  try { saved = localStorage.getItem('beach-quality'); } catch {}
+  applyQuality(new URLSearchParams(location.search).get('quality') || saved || 'medium');
+}
+document.querySelectorAll('button[data-w]').forEach(b => b.addEventListener('click', () => setWeather(b.dataset.w)));
+{
+  let saved = null;
+  try { saved = localStorage.getItem('beach-weather'); } catch {}
+  setWeather(new URLSearchParams(location.search).get('weather') || saved || 'cloudy');
+  // 打开页面时直接就是这个天气，不用等过渡
+  const w0 = WEATHER[weatherName];
+  Object.assign(W, w0, { cover: w0.cover ?? 0.6, wet: w0.rain > 0 ? 0.8 : 0 });
+}
+const elFps = document.getElementById('fps');
+let fpsFrames = 0, fpsLast = performance.now();
+
+function phaseName(th, e, hours) {
+  const morning = th < Math.PI / 2;
+  if (e < -0.12) return '夜晚';
+  if (e < 0.0) return morning ? '黎明' : '黄昏';
+  if (e < 0.12) return morning ? '日出' : '日落';
+  if (hours >= 11 && hours < 13) return '正午';
+  return morning ? '上午' : '下午';
+}
+
+// ---------- 动画循环 ----------
+const clock = new THREE.Clock();
+let elapsed = 0, cloudTime = 0;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  elapsed += dt;
+  if (realtime && !scrubbing) p = clockP();
+  else if (playing && !scrubbing) p = (p + dt * speed / CYCLE) % 1;
+  // 场景时间流速（相对 1× 的倍数）；实时模式下一天 86400 秒
+  const timeRate = realtime ? CYCLE / 86400 : (playing && !scrubbing ? speed : 0);
+  const { th, e } = updateDayCycle(p);
+  U.uTime.value = elapsed;
+  // 云跟着延时摄影的节奏飘；暂停时只是缓慢漂移。云量也会慢慢变化，有时晴朗有时多云
+  cloudTime += dt * (realtime ? 0.2 : playing && !scrubbing ? speed : 0.25) * (0.5 + 0.5 * W.wind);   // 风大云也跑得快
+  U.uCloudTime.value = cloudTime;
+  updateWeather(dt, Math.min(1, Math.max(0, 0.55 + 0.3 * Math.sin(cloudTime * 0.013 + 1.0) + 0.15 * Math.sin(cloudTime * 0.031))), e);
+
+  // 整个树冠随风摇（叶片自身的抖动在着色器里）
+  const wind = (1 + 0.5 * Math.sin(elapsed * 0.23)) * W.wind;
+  for (const c of crowns) {
+    const gust = 0.04 * (W.wind - 1) * (1 + Math.sin(elapsed * 0.9 + c.seed * 0.7));   // 大风时整体被吹向陆地一侧
+    c.crown.rotation.z = Math.sin(elapsed * 0.8 * (0.7 + 0.3 * W.wind) + c.seed) * 0.03 * wind;
+    c.crown.rotation.x = Math.sin(elapsed * 0.6 + c.seed * 1.3) * 0.02 * wind + gust;
+  }
+
+  const eventRate = realtime || !playing ? 1 : speed;   // 鸟群、海鸥出现的频率
+  updateBirds(dt, e, eventRate);
+  for (const c of critters) c.update(dt, elapsed);
+  updateGull(dt, e, eventRate);
+  updateTurtles(dt, dt * timeRate, e);
+
+  controls.update();
+  // 沙丘起伏后，防止镜头钻进沙里
+  const minCamY = sandMeshHeight(camera.position.x, camera.position.z) + 1.2;
+  if (camera.position.y < minCamY) camera.position.y = minCamY;
+  sky.position.copy(camera.position);
+  if (scene.background) {
+    renderer.setRenderTarget(skyRT);
+    renderer.render(skyScene, camera);
+    renderer.setRenderTarget(null);
+  }
+  renderer.render(scene, camera);
+  if (!window.__sceneStarted) {
+    window.__sceneStarted = true;
+    document.getElementById('status').style.display = 'none';
+  }
+
+  fpsFrames++;
+  const nowMs = performance.now();
+  if (nowMs - fpsLast > 500) {
+    elFps.textContent = Math.round(fpsFrames * 1000 / (nowMs - fpsLast)) + ' fps';
+    fpsFrames = 0;
+    fpsLast = nowMs;
+  }
+
+  if (!scrubbing) slider.value = Math.round(p * 1000);
+  const hours = ((6 + th / Math.PI * 12) % 24 + 24) % 24;
+  const hh = Math.floor(hours), mm = Math.floor((hours - hh) * 60);
+  elClock.textContent = String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  elPhase.textContent = phaseName(th, e, hours);
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  resizeSkyRT();
+});
+</script>
+</body>
+</html>
